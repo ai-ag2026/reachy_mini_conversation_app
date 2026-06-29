@@ -186,9 +186,11 @@ class MovementManager:
     def __init__(
         self,
         current_robot: ReachyMini,
+        head_tracking: bool = False,
     ):
         """Initialize movement manager."""
         self.current_robot = current_robot
+        self._head_tracking = head_tracking
 
         # Single timing source for durations
         self._now = time.monotonic
@@ -273,12 +275,16 @@ class MovementManager:
         - Antenna positions are frozen at the last commanded values.
         - Blending is reset so that upon unfreezing the antennas return smoothly.
         - Idle breathing is suppressed.
+        - With head tracking on, the head tracks the user; while speaking it is
+          handed back to the wobbler.
 
         Thread-safe: the change is posted to the worker command queue.
         """
         with self._shared_state_lock:
             if self._shared_is_listening == listening:
                 return
+        if self._head_tracking:
+            self.current_robot.start_head_tracking(weight=1.0 if listening else 0.0)
         self._command_queue.put(("set_listening", listening))
 
     def _poll_signals(self, current_time: float) -> None:

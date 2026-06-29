@@ -15,6 +15,12 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
         action="store_true",
         help="Serve the web UI at http://127.0.0.1:7860/, in addition to console mode",
     )
+    parser.add_argument(
+        "--head-tracking",
+        default=False,
+        action="store_true",
+        help="Enable daemon-side face tracking while the conversation app runs",
+    )
     parser.add_argument("--debug", default=False, action="store_true", help="Enable debug logging")
     parser.add_argument(
         "--robot-name",

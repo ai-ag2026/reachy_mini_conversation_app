@@ -187,7 +187,7 @@ def run(
             logger.error("Please check your configuration and try again.")
             sys.exit(1)
 
-    movement_manager = MovementManager(current_robot=robot)
+    movement_manager = MovementManager(current_robot=robot, head_tracking=args.head_tracking)
 
     deps = ToolDependencies(
         reachy_mini=robot,
@@ -345,6 +345,13 @@ def run(
     # taps the media pipeline at push_audio_sample. The console stream pushes
     # assistant audio through that pipeline directly.
     robot.enable_wobbling()
+    head_tracking_enabled = False
+    if args.head_tracking:
+        try:
+            robot.start_head_tracking()
+            head_tracking_enabled = True
+        except AttributeError:
+            logger.warning("Head tracking unavailable; reachy-mini SDK does not expose daemon-side tracking.")
 
     timeout_minutes = resolve_app_timeout_minutes()
     if timeout_minutes is not None:
@@ -375,6 +382,14 @@ def run(
             own_ui_server.should_exit = True
 
         movement_manager.stop()
+        if head_tracking_enabled:
+            try:
+                robot.stop_head_tracking()
+            except AttributeError:
+                logger.debug("Head tracking stop skipped; reachy-mini SDK does not expose daemon-side tracking.")
+            except Exception as e:
+                logger.debug("Error disabling head tracking during shutdown: %s", e)
+
         try:
             robot.disable_wobbling()
         except Exception as e:

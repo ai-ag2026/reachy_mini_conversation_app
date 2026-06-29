@@ -292,6 +292,9 @@ class BackgroundToolManager(BaseModel):
 
     async def shutdown(self) -> None:
         """Cancel all background tasks (listener, cleanup) and running tools."""
+        if not self._lifecycle_tasks and not self._tools:
+            return
+
         for task in self._lifecycle_tasks:
             task.cancel()
         for task in self._lifecycle_tasks:

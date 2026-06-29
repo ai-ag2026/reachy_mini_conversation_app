@@ -4,7 +4,10 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 import reachy_mini_conversation_app.main as main_mod
+from reachy_mini_conversation_app.utils import parse_args
 
 
 def test_inactivity_timeout_thread_goes_to_sleep() -> None:
@@ -42,7 +45,7 @@ def test_inactivity_timeout_thread_closes_stream_manager_without_sleep_callback(
     stream_manager.close.assert_called_once_with()
 
 
-def test_request_stop_current_app_posts_to_daemon(monkeypatch) -> None:
+def test_request_stop_current_app_posts_to_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
     """The app stop request should call the connected Reachy daemon endpoint."""
 
     class FakeResponse:
@@ -65,3 +68,10 @@ def test_request_stop_current_app_posts_to_daemon(monkeypatch) -> None:
     robot = SimpleNamespace(client=SimpleNamespace(host="192.168.1.42", port=8000))
 
     assert main_mod._request_stop_current_app(robot, MagicMock())
+
+
+def test_head_tracking_flag_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Head tracking should only start when explicitly requested."""
+    monkeypatch.setattr("sys.argv", ["reachy-mini-conversation-app", "--head-tracking"])
+    args, _ = parse_args()
+    assert args.head_tracking is True
