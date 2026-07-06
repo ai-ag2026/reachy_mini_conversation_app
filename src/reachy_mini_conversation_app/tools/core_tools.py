@@ -44,6 +44,10 @@ class ToolDependencies:
     camera_worker: Any | None = None  # CameraWorker for frame buffering
     vision_processor: Any | None = None
     motion_duration_s: float = 1.0
+    # Optional playback seam: handler-provided callable(path) that plays a wav on the spoken-
+    # audio path (half-duplex mute + playback clock respected). Used for emotion sounds, which
+    # the queue-move path silently dropped (gap-map Stufe 1, 2026-07-02).
+    play_sound_path: Any | None = None
 
 
 class Tool(abc.ABC):
@@ -548,8 +552,11 @@ async def _dispatch_tool_call(tool_name: str, args: Dict[str, Any], deps: ToolDe
     try:
         return await tool(deps, **args)
     except asyncio.CancelledError:
+        # Re-raise: swallowing it here absorbed task.cancel() (watchdog / cancel_tool) and the
+        # cancelled task kept running (review 2026-07-02 round 2, P3). Callers that track state
+        # handle CancelledError themselves (background_tool_manager -> status CANCELLED).
         logger.info("Tool cancelled: %s", tool_name)
-        return {"error": "Tool cancelled"}
+        raise
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
         logger.exception("Tool error in %s: %s", tool_name, msg)

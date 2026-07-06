@@ -6,6 +6,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+
+pytest.importorskip("torch")
+pytest.importorskip("transformers")
+
 from reachy_mini_conversation_app.vision.local_vision import (
     LOCAL_VISION_RESPONSE_INSTRUCTIONS,
     VisionConfig,

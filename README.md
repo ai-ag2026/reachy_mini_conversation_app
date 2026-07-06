@@ -34,6 +34,7 @@ Conversational app for the Reachy Mini robot combining realtime voice backends, 
   - **Hugging Face** - default, using the built-in Hugging Face server or your own local endpoint.
   - **OpenAI Realtime** (`gpt-realtime-2`) - requires `OPENAI_API_KEY`.
   - **Gemini Live** (`gemini-3.1-flash-live-preview`) - requires `GEMINI_API_KEY`.
+  - **Local Agent** (`local`) - route the brain to your own self-hosted, OpenAI-compatible agent with local STT/TTS. Fully self-hostable, no cloud key required. See [Local Agent backend](#local-agent-backend).
 - Vision processing uses the selected realtime backend by default (when the camera tool is used), with optional on-device local vision using SmolVLM2 (CPU/GPU/MPS) via `--local-vision`.
 - Layered motion system queues primary moves (dances, emotions, goto poses, breathing) while blending speech-reactive wobble and head-tracking.
 - Async tool dispatch integrates robot motion, camera capture, and optional head-tracking capabilities through a Gradio web UI with live transcripts.
@@ -130,14 +131,45 @@ Copy `.env.example` to `.env` when you want to switch backends, provide API keys
 |----------|-------------|
 | `OPENAI_API_KEY` | Required for OpenAI Realtime mode. |
 | `GEMINI_API_KEY` | Required for Gemini mode. Also accepts `GOOGLE_API_KEY`. Get one at [aistudio.google.com](https://aistudio.google.com/apikey). |
-| `BACKEND_PROVIDER` | Realtime backend to use: `huggingface` (default), `openai`, or `gemini`. |
+| `BACKEND_PROVIDER` | Realtime backend to use: `huggingface` (default), `openai`, `gemini`, or `local`. |
 | `MODEL_NAME` | Optional model override for OpenAI Realtime or Gemini Live. Defaults to `gpt-realtime-2` for OpenAI and `gemini-3.1-flash-live-preview` for Gemini. Hugging Face uses the server's model selection. |
 | `REALTIME_TRANSCRIPTION_LANGUAGE` | Optional input transcription language for realtime backends. Defaults to `en`; set to a backend-supported code such as `zh` for Chinese. |
 | `HF_REALTIME_CONNECTION_MODE` | Hugging Face connection selector: `deployed` uses the built-in Hugging Face server; `local` uses `HF_REALTIME_WS_URL`. Defaults to `deployed`. |
 | `HF_REALTIME_WS_URL` | Direct websocket endpoint for your own Hugging Face backend. Accepts either a base URL like `ws://127.0.0.1:8765/v1` or the full websocket URL `ws://127.0.0.1:8765/v1/realtime`. Used when `HF_REALTIME_CONNECTION_MODE=local`. |
 | `HF_HOME` | Cache directory for local Hugging Face downloads (only used with `--local-vision` flag, defaults to `./cache`). |
 | `HF_TOKEN` | Optional token for Hugging Face access (for gated/private assets). |
+| `AGENT_BASE_URL` | Local Agent brain: base URL of your OpenAI-compatible agent (`{url}/chat/completions`). Defaults to `http://127.0.0.1:8642/v1`. |
+| `AGENT_MODEL` | Model name sent to your agent. Defaults to `local-agent`. |
+| `AGENT_STT_BASE_URL` | Local speech-to-text endpoint (OpenAI-compatible). Defaults to `http://127.0.0.1:5092/v1`. |
+| `AGENT_QWEN_TTS_BASE_URL` / `AGENT_QWEN_TTS_VOICE` | Local text-to-speech endpoint and voice name. Defaults to `http://127.0.0.1:7034/v1` and `default`. |
+| `AGENT_DAEMON_BASE_URL` | Reachy daemon HTTP API for playback/movement/status. Defaults to `http://127.0.0.1:8000`. |
 | `LOCAL_VISION_MODEL` | Hugging Face model path for local vision processing (only used with `--local-vision` flag, defaults to `HuggingFaceTB/SmolVLM2-2.2B-Instruct`). |
+
+### Local Agent backend
+
+The `local` backend turns this app into the **body** for a brain you host yourself. Instead of a cloud realtime model, the loop is:
+
+```
+mic → VAD → local STT → your OpenAI-compatible agent (the brain) → local TTS → speaker
+                                    ↕
+              full body tool surface: camera/vision, head movement, dances,
+              emotions, antennas, breathing, speech-reactive wobble, idle aliveness
+```
+
+Everything runs against endpoints **you** configure — no cloud key, no vendor lock-in. The full body/functionality is retained: voice (barge-in + semantic gate), one-shot vision, safe bounded head movement, and the aliveness layer (idle motion, companion reactions, emotion cues, speech sway) are all active and driven by your agent's replies and tool calls.
+
+Minimal `.env` to get started (see `.env.example` for the full list):
+
+```env
+BACKEND_PROVIDER=local
+AGENT_BASE_URL=http://your-agent-host:8642/v1     # any server exposing /chat/completions
+AGENT_STT_BASE_URL=http://your-stt-host:5092/v1   # OpenAI-compatible transcription
+AGENT_QWEN_TTS_BASE_URL=http://your-tts-host:7034/v1
+AGENT_QWEN_TTS_VOICE=default
+REACHY_MINI_CUSTOM_PROFILE=local-agent
+```
+
+**Persona.** This fork ships a neutral `local-agent` profile (full mode) and a `local-agent-work` profile (safety-restricted toolset). To give your robot its own character, drop a profile folder into `external_content/external_profiles/` and select it with `REACHY_MINI_CUSTOM_PROFILE`, or point `REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY` at your own directory — no code changes needed.
 
 ### Hugging Face Connection Modes
 

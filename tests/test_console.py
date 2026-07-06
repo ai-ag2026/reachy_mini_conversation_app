@@ -824,3 +824,29 @@ def test_local_stream_launch_waits_for_manual_openai_key_without_download(
     init_settings_ui.assert_called_once()
     media.start_recording.assert_not_called()
     media.start_playing.assert_not_called()
+
+
+def test_settings_endpoints_get_set_validate_and_persist(tmp_path, monkeypatch):
+    """GET /settings returns the live knobs; POST applies + persists; bad input -> 400."""
+    from reachy_mini_conversation_app.agent_voice_handler import AgentVoiceHandler
+
+    app = FastAPI()
+    robot = SimpleNamespace(media=SimpleNamespace(audio=None, backend=None))
+    handler = AgentVoiceHandler(MagicMock(), agent_client=MagicMock(), tts_client=MagicMock())
+    stream = LocalStream(handler, robot, settings_app=app, instance_path=str(tmp_path))
+    stream._init_settings_ui_if_needed()
+    client = TestClient(app)
+
+    got = client.get("/settings")
+    assert got.status_code == 200 and "reasoning_effort" in got.json()
+
+    ok = client.post("/settings", json={"name": "reasoning_effort", "value": "high"})
+    assert ok.status_code == 200 and ok.json()["reasoning_effort"] == "high"
+    env_text = (tmp_path / ".env").read_text()
+    assert "AGENT_VOICE_REASONING_EFFORT=high" in env_text  # persisted for restart survival
+
+    bad = client.post("/settings", json={"name": "reasoning_effort", "value": "ludicrous"})
+    assert bad.status_code == 400 and bad.json()["error"] == "invalid_value"
+
+    unknown = client.post("/settings", json={"name": "nope", "value": 1})
+    assert unknown.status_code == 400 and unknown.json()["error"] == "unknown_setting"

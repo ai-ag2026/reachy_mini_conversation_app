@@ -170,7 +170,21 @@ class BackgroundToolManager(BaseModel):
         tool_call_routine: ToolCallRoutine,
     ) -> None:
         """Execute the tool and handle completion."""
-        result: dict[str, Any] = await tool_call_routine(self)
+        try:
+            result: dict[str, Any] = await tool_call_routine(self)
+        except asyncio.CancelledError:
+            # Without this, a cancellation landing outside the dispatch window left the tool
+            # RUNNING forever — re-cancelled and logged every 5 min after the 24h sweep
+            # (review 2026-07-02 round 2, P3).
+            bg_tool.completed_at = time.monotonic()
+            bg_tool.status = ToolState.CANCELLED
+            bg_tool.error = "Tool cancelled"
+            logger.debug(f"Background tool cancelled (task): {bg_tool.tool_name} (id={bg_tool.id})")
+            try:
+                self._notification_queue.put_nowait(bg_tool.get_notification())
+            except Exception:
+                pass
+            raise
         bg_tool.completed_at = time.monotonic()
         error = result.get("error")
 

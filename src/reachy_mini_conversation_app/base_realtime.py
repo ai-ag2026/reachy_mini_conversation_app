@@ -259,7 +259,7 @@ class BaseRealtimeHandler(ConversationHandler, ABC):
                 if num_samples == 0:
                     return
                 audio = resample(audio, num_samples)
-                logger.info("push audio")
+                logger.debug("push audio")  # hot path ~50 Hz — INFO spammed the journal (P3)
             robot.media.push_audio_sample(audio.astype(np.float32))
         except Exception as exc:
             logger.debug("Daemon wobbler audio tap failed: %s", exc)

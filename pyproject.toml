@@ -8,14 +8,17 @@ version = "0.7.0"
 authors = [{ name = "Pollen Robotics", email = "contact@pollen-robotics.com" }]
 description = ""
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
+# Core pins aligned to what actually runs in the robot apps_venv (audit 2026-07-02): a stale 0.6.2
+# editable dist-info and drifted pins meant `pip check` was red and a reinstall would have changed
+# the working robot. These now match the installed reality so a reinstall reproduces it.
 dependencies = [
     #Media
     "aiortc>=1.13.0",
     "av",
     "fastrtc>=0.0.34",
     "gradio==5.50.1.dev1",
-    "huggingface-hub==1.3.0",
+    "huggingface-hub==1.21.0",  # was 1.19.0; installed 1.21.0
     "httpx>=0.28.1",
 
     #Environment variables
@@ -24,17 +27,23 @@ dependencies = [
     #OpenAI
     "openai>=2.30.0",
 
-    #Gemini
-    "google-genai>=1.0.0",
+    # Gemini backend deps live in the optional [gemini] extra (google-genai) — the local backend
+    # deploy never imports gemini_live, so google-genai is not a core requirement.
 
     #Reachy mini
     "reachy_mini_dances_library",
     "reachy_mini_toolbox",
-    "reachy-mini>=1.8.0",
-    "mcp>=1.27.1",
+    "reachy-mini[mujoco]==1.8.4",  # was 1.8.3; installed 1.8.4 (daemon firmware 1.8.3, compatible)
+    "mcp>=1.26.0",  # was >=1.27.1; installed 1.26.0
 ]
 
 [project.optional-dependencies]
+# Gemini realtime backend (upstream). google-genai is imported lazily by gemini_live.py, which is
+# only loaded when BACKEND_PROVIDER=gemini. Moved out of core so the local backend deploy (which never
+# selects Gemini and doesn't install it) has an honest dependency graph. Install: uv sync --extra gemini
+gemini = [
+  "google-genai>=1.0.0",
+]
 local_vision = [
   "accelerate>=1.13.0",
   "torch>=2.1",
@@ -47,6 +56,13 @@ yolo_vision = [
 ]
 mediapipe_vision = [
   "mediapipe==0.10.14",
+]
+# Local-agent addition (not upstream): the `local` backend's in-receive() STT front-end, vision,
+# and aliveness cues live in the companion `reachy-hermes-agent` module (reachy_agent.voice/body). Its
+# [voice] extra pulls the Silero VAD v5 ONNX runtime + the Nemotron streaming-ASR WS client.
+# Install with: uv sync --extra voice  (only needed when BACKEND_PROVIDER=local).
+voice = [
+  "reachy-hermes-agent[voice]",
 ]
 all_vision = [
   "accelerate>=1.13.0",
@@ -72,8 +88,32 @@ reachy-mini-conversation-app = "reachy_mini_conversation_app.main:main"
 
 [tool.uv]
 exclude-newer = "7 days"
+# Temporary resolver bridge for Reachy Mini with the current Gradio dev stack:
+# gradio==5.50.1.dev1 declares an older pydantic cap, while reachy-mini requires newer
+# FastAPI/Pydantic/Uvicorn. Keep explicit and revisit when Gradio/Reachy metadata converges
+# upstream. (tracked 1.8.1->1.8.3->1.8.4 as the apps_venv SDK advanced.)
+# Installed reality: fastapi 0.138.2, uvicorn 0.49.0, pydantic 2.13.4 — pydantic kept pinned here
+# because gradio's <=2.12.3 cap must be overridden; fastapi/uvicorn floors updated to match install.
+override-dependencies = [
+  "fastapi==0.138.2",
+  "pydantic==2.13.4",
+  "uvicorn==0.49.0",
+]
+
+# ACCEPTED pre-existing conflicts (NOT from this app's core deps; do not "fix" — they belong to the
+# base robot image and changing them risks the live robot): opencv-contrib/numba/gst-signalling want
+# numpy<2.3/2.4 but the image ships numpy 2.5.0; mediapipe/pipecat want protobuf<5/<7 but the image
+# ships protobuf 7.35.1; pipecat wants onnxruntime~=1.23 but 1.27.0 is installed. The conversation
+# app runs correctly on the installed versions; these are documented, not resolved.
 
 [tool.uv.exclude-newer-package]
+# Reachy Mini 1.8.3 requires newer Hugging Face/Pydantic/FastAPI packages than the
+# repo-wide 7-day freshness guard permits. These exceptions are scoped to the
+# official Reachy adapter lane and should be removed once upstream pins converge.
+"huggingface-hub" = false
+"hf-xet" = false
+"fastapi" = false
+"pydantic" = false
 "reachy-mini" = false
 "reachy-mini-dances-library" = false
 "reachy-mini-toolbox" = false

@@ -26,6 +26,7 @@ class DanceQueueMove(Move):  # type: ignore
         """Initialize a DanceQueueMove."""
         self.dance_move = DanceMove(move_name)
         self.move_name = move_name
+        self._last_pose = None  # last valid evaluate() result (error fallback, P3)
 
     @property
     def duration(self) -> float:
@@ -42,11 +43,16 @@ class DanceQueueMove(Move):  # type: ignore
             if isinstance(antennas, tuple):
                 antennas = np.array([antennas[0], antennas[1]])
 
+            self._last_pose = (head_pose, antennas, body_yaw)
             return (head_pose, antennas, body_yaw)
 
         except Exception as e:
             logger.error(f"Error evaluating dance move '{self.move_name}' at t={t}: {e}")
-            # Return neutral pose on error
+            # Hold the LAST VALID pose: upstream raises at the t>=timestamps[-1] boundary tick,
+            # and a neutral fallback flashed the head to neutral for one frame mid-pose
+            # (review 2026-07-02 round 2, P3). Neutral only if nothing valid was ever produced.
+            if self._last_pose is not None:
+                return self._last_pose
             from reachy_mini.utils import create_head_pose
 
             neutral_head_pose = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
@@ -60,6 +66,7 @@ class EmotionQueueMove(Move):  # type: ignore
         """Initialize an EmotionQueueMove."""
         self.emotion_move = recorded_moves.get(emotion_name)
         self.emotion_name = emotion_name
+        self._last_pose = None  # last valid evaluate() result (error fallback, P3)
 
     @property
     def duration(self) -> float:
@@ -76,11 +83,14 @@ class EmotionQueueMove(Move):  # type: ignore
             if isinstance(antennas, tuple):
                 antennas = np.array([antennas[0], antennas[1]])
 
+            self._last_pose = (head_pose, antennas, body_yaw)
             return (head_pose, antennas, body_yaw)
 
         except Exception as e:
             logger.error(f"Error evaluating emotion '{self.emotion_name}' at t={t}: {e}")
-            # Return neutral pose on error
+            # Hold the LAST VALID pose (see DanceQueueMove — one-frame neutral flash, P3).
+            if self._last_pose is not None:
+                return self._last_pose
             from reachy_mini.utils import create_head_pose
 
             neutral_head_pose = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
@@ -99,9 +109,13 @@ class GotoQueueMove(Move):  # type: ignore
         target_body_yaw: float = 0,
         start_body_yaw: float | None = None,
         duration: float = 1.0,
+        interpolation: str | None = None,  # linear|minjerk|ease_in_out|cartoon (default: $AGENT_GOTO_STYLE or linear)
     ):
         """Initialize a GotoQueueMove."""
         self._duration = duration
+        import os
+
+        self.interpolation = (interpolation or os.getenv("AGENT_GOTO_STYLE", "linear")).strip().lower()
         self.target_head_pose = target_head_pose
         self.start_head_pose = start_head_pose
         self.target_antennas = target_antennas
@@ -114,6 +128,16 @@ class GotoQueueMove(Move):  # type: ignore
         """Duration property required by official Move interface."""
         return self._duration
 
+    def rebase_start_pose(self, primary_pose) -> None:
+        """Called by the MovementManager at DEQUEUE: replace the enqueue-time start with the
+        pose the head actually has now, so evaluate(0) starts where the head IS (no one-tick
+        jump back when this goto waited behind a running move; review 2026-07-02 round 2, P2).
+        The target stays as computed — it was derived from a real bounded pose."""
+        head, antennas, body_yaw = primary_pose
+        self.start_head_pose = np.asarray(head, dtype=np.float32)
+        self.start_antennas = (float(antennas[0]), float(antennas[1]))
+        self.start_body_yaw = float(body_yaw)
+
     def evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
         """Evaluate goto move at time t using linear interpolation."""
         try:
@@ -122,6 +146,15 @@ class GotoQueueMove(Move):  # type: ignore
 
             # Clamp t to [0, 1] for interpolation
             t_clamped = max(0, min(1, t / self.duration))
+            # Optional easing (gap-map Stufe 1): warp normalized time through the SDK curve —
+            # CARTOON adds a playful overshoot/bounce, MIN_JERK smooths. Linear = old behavior.
+            if self.interpolation not in ("", "linear"):
+                try:
+                    from reachy_mini.utils.interpolation import InterpolationTechnique, time_trajectory
+
+                    t_clamped = float(time_trajectory(t_clamped, InterpolationTechnique(self.interpolation)))
+                except Exception:
+                    pass  # unknown style -> linear
 
             # Use start pose if available, otherwise neutral
             if self.start_head_pose is not None:

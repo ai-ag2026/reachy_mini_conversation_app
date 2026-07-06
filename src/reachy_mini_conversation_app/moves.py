@@ -69,6 +69,7 @@ class BreathingMove(Move):  # type: ignore
         interpolation_start_pose: NDArray[np.float32],
         interpolation_start_antennas: Tuple[float, float],
         interpolation_duration: float = 1.0,
+        interpolation_start_body_yaw: float = 0.0,
     ):
         """Initialize breathing move.
 
@@ -81,6 +82,9 @@ class BreathingMove(Move):  # type: ignore
         self.interpolation_start_pose = interpolation_start_pose
         self.interpolation_start_antennas = np.array(interpolation_start_antennas)
         self.interpolation_duration = interpolation_duration
+        # Interpolated to 0 in phase 1: returning a hard 0.0 from the first tick snapped the body
+        # after any emotion that ended with body_yaw != 0 (review 2026-07-02 round 2, P2).
+        self.interpolation_start_body_yaw = float(interpolation_start_body_yaw)
 
         # Neutral positions for breathing base
         self.neutral_head_pose = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
@@ -99,6 +103,18 @@ class BreathingMove(Move):  # type: ignore
 
     def evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
         """Evaluate breathing move at time t."""
+        try:
+            return self._evaluate(t)
+        except Exception:
+            # e.g. scipy R.from_matrix ValueError on a degenerate interpolation_start_pose read
+            # from a glitching daemon — fall back to the neutral base instead of throwing into
+            # the worker tick (review 2026-07-02 round 2, P1-10 trigger).
+            self._eval_errors = getattr(self, "_eval_errors", 0) + 1
+            if self._eval_errors <= 3:
+                logger.warning("BreathingMove.evaluate failed (#%d) — neutral fallback", self._eval_errors, exc_info=True)
+            return (self.neutral_head_pose.copy(), np.asarray(self.neutral_antennas, dtype=np.float64).copy(), 0.0)
+
+    def _evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
         if t < self.interpolation_duration:
             # Phase 1: Interpolate to neutral base position
             interpolation_t = t / self.interpolation_duration
@@ -115,6 +131,8 @@ class BreathingMove(Move):  # type: ignore
                 1 - interpolation_t
             ) * self.interpolation_start_antennas + interpolation_t * self.neutral_antennas
             antennas = antennas_interp.astype(np.float64)
+            body_yaw = (1.0 - interpolation_t) * self.interpolation_start_body_yaw
+            return (head_pose, antennas, body_yaw)
 
         else:
             # Phase 2: Breathing patterns from neutral base
@@ -185,6 +203,19 @@ class MovementState:
         0.0,
         0.0,
     )
+    # Externally injected additive offsets (e.g. speech-sway): SUMMED with face tracking each
+    # tick, never overwritten by it. The old pending-offsets seam wrote face_tracking_offsets,
+    # which _update_face_tracking clobbered every tick — injected offsets silently vanished
+    # (review 2026-07-02 round 2, seam finding).
+    external_offsets: Tuple[float, float, float, float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    external_antennas: Tuple[float, float] = (0.0, 0.0)
 
     # Status flags
     last_primary_pose: FullBodyPose | None = None
@@ -214,7 +245,7 @@ class LoopFrequencyStats:
 
 
 class MovementManager:
-    """Coordinate sequential moves, additive offsets, and robot output at 100 Hz.
+    """Coordinate sequential moves, additive offsets, and robot output at CONTROL_LOOP_FREQUENCY_HZ (60 Hz).
 
     Responsibilities:
     - Own a real-time loop that samples the current primary move (if any), fuses
@@ -227,7 +258,7 @@ class MovementManager:
     Timing:
     - All elapsed-time calculations rely on `time.monotonic()` through `self._now`
       to avoid wall-clock jumps.
-    - The loop attempts 100 Hz
+    - The loop attempts CONTROL_LOOP_FREQUENCY_HZ (60 Hz)
 
     Concurrency:
     - External threads communicate via `_command_queue` messages.
@@ -289,6 +320,7 @@ class MovementManager:
             0.0,
             0.0,
         )
+        self._pending_external_antennas: Tuple[float, float] = (0.0, 0.0)
         self._face_offsets_dirty = False
 
         self._shared_state_lock = threading.Lock()
@@ -359,16 +391,35 @@ class MovementManager:
             self._handle_command(command, payload, current_time)
 
     def _apply_pending_offsets(self) -> None:
-        """Apply the most recent face offset update."""
-        face_offsets: Tuple[float, float, float, float, float, float] | None = None
+        """Apply the most recent externally injected offset update (additive channel)."""
+        offsets: Tuple[float, float, float, float, float, float] | None = None
+        antennas: Tuple[float, float] = (0.0, 0.0)
         with self._face_offsets_lock:
             if self._face_offsets_dirty:
-                face_offsets = self._pending_face_offsets
+                offsets = self._pending_face_offsets
+                antennas = self._pending_external_antennas
                 self._face_offsets_dirty = False
 
-        if face_offsets is not None:
-            self.state.face_tracking_offsets = face_offsets
+        if offsets is not None:
+            self.state.external_offsets = offsets
+            self.state.external_antennas = antennas
             self.state.update_activity()
+
+    def set_external_offsets(
+        self,
+        offsets: Tuple[float, float, float, float, float, float],
+        antennas: Tuple[float, float] = (0.0, 0.0),
+    ) -> None:
+        """Thread-safe producer API for the additive secondary channel (e.g. speech-sway).
+
+        Applied on the next tick and SUMMED with the camera's face-tracking offsets — head as a
+        world-frame offset (x, y, z, roll, pitch, yaw; meters/radians), antennas in radians.
+        Feed zeros to release. Marking activity as a side effect suppresses idle breathing while
+        a producer is actively driving (same rule as every other movement source)."""
+        with self._face_offsets_lock:
+            self._pending_face_offsets = tuple(float(v) for v in offsets)  # type: ignore[assignment]
+            self._pending_external_antennas = (float(antennas[0]), float(antennas[1]))
+            self._face_offsets_dirty = True
 
     def _handle_command(self, command: str, payload: Any, current_time: float) -> None:
         """Handle a single cross-thread command."""
@@ -448,7 +499,17 @@ class MovementManager:
             self.state.move_start_time = None
 
             if self.move_queue:
-                self.state.current_move = self.move_queue.popleft()
+                next_move = self.move_queue.popleft()
+                rebase = getattr(next_move, "rebase_start_pose", None)
+                if callable(rebase) and self.state.last_primary_pose is not None:
+                    try:
+                        # A queued goto froze its start pose at ENQUEUE time; if it waited behind
+                        # a running move, evaluate(0) jumped back to that stale pose for one tick
+                        # (review 2026-07-02 round 2, P2). Re-base onto the actual current pose.
+                        rebase(clone_full_body_pose(self.state.last_primary_pose))
+                    except Exception:
+                        logger.warning("rebase_start_pose failed — keeping the enqueue-time start", exc_info=True)
+                self.state.current_move = next_move
                 self.state.move_start_time = current_time
                 # Any real move cancels breathing mode flag
                 self._breathing_active = isinstance(self.state.current_move, BreathingMove)
@@ -467,16 +528,31 @@ class MovementManager:
                 try:
                     # These 2 functions return the latest available sensor data from the robot, but don't perform I/O synchronously.
                     # Therefore, we accept calling them inside the control loop.
-                    _, current_antennas = self.current_robot.get_current_joint_positions()
-                    current_head_pose = self.current_robot.get_current_head_pose()
+                    # Prefer the last COMMANDED primary pose: the measured pose contains the
+                    # secondary (face-tracking) offset, which _compose_full_body_pose adds AGAIN —
+                    # breathing started with a one-tick lurch toward 2x the offset whenever a face
+                    # was in view (review 2026-07-02 round 2, P3). Measured pose stays the fallback
+                    # (fresh start, no primary commanded yet).
+                    if self.state.last_primary_pose is not None:
+                        current_head_pose, current_antennas, current_body_yaw = clone_full_body_pose(
+                            self.state.last_primary_pose
+                        )
+                    else:
+                        current_body_yaw, current_antennas = self.current_robot.get_current_joint_positions()
+                        current_head_pose = self.current_robot.get_current_head_pose()
 
                     self._breathing_active = True
                     self.state.update_activity()
 
+                    try:
+                        start_body_yaw = float(np.asarray(current_body_yaw).reshape(-1)[0])
+                    except Exception:
+                        start_body_yaw = 0.0
                     breathing_move = BreathingMove(
                         interpolation_start_pose=current_head_pose,
                         interpolation_start_antennas=current_antennas,
                         interpolation_duration=1.0,
+                        interpolation_start_body_yaw=start_body_yaw,
                     )
                     self.move_queue.append(breathing_move)
                     logger.debug("Started breathing after %.1fs of inactivity", idle_for)
@@ -527,8 +603,11 @@ class MovementManager:
         return primary_full_body_pose
 
     def _get_secondary_pose(self) -> FullBodyPose:
-        """Get the secondary full body pose from face tracking offsets."""
-        current_offsets = self.state.face_tracking_offsets
+        """Get the secondary full body pose: face-tracking + external offsets, summed."""
+        face = self.state.face_tracking_offsets
+        ext = self.state.external_offsets
+        ant = self.state.external_antennas
+        current_offsets = tuple(f + e for f, e in zip(face, ext)) + ant
 
         # Skip expensive create_head_pose if offsets unchanged since last tick
         if current_offsets == self._cached_secondary_offsets:
@@ -545,7 +624,7 @@ class MovementManager:
             mm=False,
         )
         self._cached_secondary_offsets = current_offsets
-        self._cached_secondary_pose = (secondary_head_pose, (0.0, 0.0), 0.0)
+        self._cached_secondary_pose = (secondary_head_pose, ant, 0.0)
         return self._cached_secondary_pose
 
     def _compose_full_body_pose(self, current_time: float) -> FullBodyPose:
@@ -681,7 +760,7 @@ class MovementManager:
             self.state.face_tracking_offsets = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     def start(self) -> None:
-        """Start the worker thread that drives the 100 Hz control loop."""
+        """Start the worker thread that drives the control loop (CONTROL_LOOP_FREQUENCY_HZ, 60 Hz)."""
         if self._thread is not None and self._thread.is_alive():
             logger.warning("Move worker already running; start() ignored")
             return
@@ -690,16 +769,19 @@ class MovementManager:
         self._thread.start()
         logger.debug("Move worker started")
 
-    def stop(self) -> None:
+    def stop(self, skip_neutral: bool = False) -> None:
         """Request the worker thread to stop and wait for it to exit.
 
-        Before stopping, resets the robot to a neutral position.
+        Before stopping, resets the robot to a neutral position — unless ``skip_neutral``:
+        when goto_sleep() follows anyway (app shutdown), the blocking 2s neutral goto first
+        LIFTED the head only to lower it again, and stretched the SIGTERM window toward the
+        systemd stop timeout (review 2026-07-02 round 2, P3).
         """
         if self._thread is None or not self._thread.is_alive():
             logger.debug("Move worker not running; stop() ignored")
             return
 
-        logger.info("Stopping movement manager and resetting to neutral position...")
+        logger.info("Stopping movement manager%s...", "" if skip_neutral else " and resetting to neutral position")
 
         # Clear any queued moves and stop current move
         self.clear_move_queue()
@@ -710,6 +792,9 @@ class MovementManager:
             self._thread.join()
             self._thread = None
         logger.debug("Move worker stopped")
+
+        if skip_neutral:
+            return
 
         # Reset to neutral position using goto_target (same approach as wake_up)
         try:
@@ -770,7 +855,7 @@ class MovementManager:
 
         Single set_target() call with pose fusion.
         """
-        logger.debug("Starting enhanced movement control loop (100Hz)")
+        logger.debug("Starting enhanced movement control loop (%.0f Hz)", self.target_frequency)
 
         loop_count = 0
         prev_loop_start = self._now()
@@ -785,23 +870,36 @@ class MovementManager:
                 freq_stats = self._update_frequency_stats(loop_start, prev_loop_start, freq_stats)
             prev_loop_start = loop_start
 
-            # 1) Poll external commands and apply pending offsets (atomic snapshot)
-            self._poll_signals(loop_start)
+            # Steps 1-6 guarded as one tick: a single throwing move (degenerate pose from a
+            # daemon glitch/reconnect, a bad evaluate()) must NOT kill the worker thread — the
+            # robot froze with torque held and the queue was never read again (review
+            # 2026-07-02 round 2, P1-10). Skip the tick, keep the loop alive.
+            try:
+                # 1) Poll external commands and apply pending offsets (atomic snapshot)
+                self._poll_signals(loop_start)
 
-            # 2) Manage the primary move queue (start new move, end finished move, breathing)
-            self._update_primary_motion(loop_start)
+                # 2) Manage the primary move queue (start new move, end finished move, breathing)
+                self._update_primary_motion(loop_start)
 
-            # 3) Update vision-based secondary offsets
-            self._update_face_tracking(loop_start)
+                # 3) Update vision-based secondary offsets
+                self._update_face_tracking(loop_start)
 
-            # 4) Build primary and secondary full-body poses, then fuse them
-            head, antennas, body_yaw = self._compose_full_body_pose(loop_start)
+                # 4) Build primary and secondary full-body poses, then fuse them
+                head, antennas, body_yaw = self._compose_full_body_pose(loop_start)
 
-            # 5) Apply listening antenna freeze or blend-back
-            antennas_cmd = self._calculate_blended_antennas(antennas)
+                # 5) Apply listening antenna freeze or blend-back
+                antennas_cmd = self._calculate_blended_antennas(antennas)
 
-            # 6) Single set_target call - the only control point
-            self._issue_control_command(head, antennas_cmd, body_yaw)
+                # 6) Single set_target call - the only control point
+                self._issue_control_command(head, antennas_cmd, body_yaw)
+            except Exception:
+                self._tick_errors = getattr(self, "_tick_errors", 0) + 1
+                if self._tick_errors <= 3 or self._tick_errors % 200 == 0:
+                    logger.warning(
+                        "Movement tick failed (#%d) — skipping tick, worker stays alive",
+                        self._tick_errors,
+                        exc_info=True,
+                    )
 
             # 7) Adaptive sleep to align to next tick, then publish shared state
             sleep_time, freq_stats = self._schedule_next_tick(loop_start, freq_stats)

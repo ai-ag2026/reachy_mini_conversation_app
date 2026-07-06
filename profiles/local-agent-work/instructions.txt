@@ -1,0 +1,4 @@
+Local Agent — work mode. Same direct assistant, but a SAFETY-RESTRICTED toolset: no terminal, no
+code execution, no filesystem access. Use the safe tools (web, memory, vision, home automation,
+todo, skills, …); decline or defer anything that needs a shell, code, or files. Good for focused,
+low-risk work while we talk. (Selecting this profile drops the dangerous gateway tools.)

@@ -1,5 +1,7 @@
 import re
+import os
 import random
+import asyncio
 import logging
 import unicodedata
 from typing import Any, Dict
@@ -9,18 +11,30 @@ from reachy_mini_conversation_app.tools.core_tools import Tool, ToolDependencies
 
 logger = logging.getLogger(__name__)
 
-# Initialize emotion library
-try:
-    from reachy_mini.motion.recorded_move import RecordedMoves
-    from reachy_mini_conversation_app.dance_emotion_moves import EmotionQueueMove
+# Emotion library: initialized LAZILY on first use. The old module-import init blocked app
+# startup on a cold HF cache (network download) and a single failure left emotions dead until
+# restart with no retry (review 2026-07-02 round 2, P3).
+from reachy_mini_conversation_app.dance_emotion_moves import EmotionQueueMove  # noqa: E402
 
-    # Note: huggingface_hub automatically reads HF_TOKEN from environment variables
-    RECORDED_MOVES = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
-    EMOTION_AVAILABLE = True
-except Exception as e:
-    logger.warning(f"Emotion library not available: {e}")
-    RECORDED_MOVES = None
-    EMOTION_AVAILABLE = False
+RECORDED_MOVES = None
+EMOTION_AVAILABLE = True  # optimistic until a load attempt fails; refreshed per attempt
+
+
+def _get_recorded_moves():
+    """Load (and cache) the HF emotion library; retried on every call until it succeeds."""
+    global RECORDED_MOVES, EMOTION_AVAILABLE
+    if RECORDED_MOVES is not None:
+        return RECORDED_MOVES
+    try:
+        from reachy_mini.motion.recorded_move import RecordedMoves
+
+        # Note: huggingface_hub automatically reads HF_TOKEN from environment variables
+        RECORDED_MOVES = RecordedMoves("pollen-robotics/reachy-mini-emotions-library")
+        EMOTION_AVAILABLE = True
+    except Exception as e:
+        logger.warning(f"Emotion library not available (will retry on next use): {e}")
+        EMOTION_AVAILABLE = False
+    return RECORDED_MOVES
 
 
 EMOTION_INTENTS: tuple[str, ...] = (
@@ -233,17 +247,18 @@ def random_curated_emotion(available_emotions: list[str]) -> str:
 
 def get_available_emotions_and_descriptions() -> str:
     """Get formatted list of available emotions with descriptions."""
-    if not EMOTION_AVAILABLE:
+    moves = _get_recorded_moves()
+    if moves is None:
         return "Emotions not available"
 
     try:
-        emotion_names = RECORDED_MOVES.list_moves()
+        emotion_names = moves.list_moves()
         if not emotion_names:
             return "No emotions currently available"
 
         output = "Available emotions:\n"
         for name in emotion_names:
-            description = RECORDED_MOVES.get(name).description
+            description = moves.get(name).description
             output += f" - {name}: {description}\n"
         return output
     except Exception as e:
@@ -274,7 +289,10 @@ class PlayEmotion(Tool):
 
     async def __call__(self, deps: ToolDependencies, **kwargs: Any) -> Dict[str, Any]:
         """Play a pre-recorded emotion."""
-        if not EMOTION_AVAILABLE:
+        # Lazy load + retry: the library may not have been downloadable at app start
+        # (review 2026-07-02 round 2, P3). Off-thread — first load can hit the network.
+        moves = await asyncio.to_thread(_get_recorded_moves)
+        if moves is None:
             return {"error": "Emotion system not available"}
 
         requested_emotion = kwargs.get("emotion")
@@ -282,7 +300,7 @@ class PlayEmotion(Tool):
         logger.info("Tool call: play_emotion emotion=%s", requested_emotion)
 
         try:
-            emotion_names = RECORDED_MOVES.list_moves()
+            emotion_names = moves.list_moves()
             if not emotion_names:
                 return {"error": "No emotions currently available"}
 
@@ -292,8 +310,20 @@ class PlayEmotion(Tool):
                 emotion_name = random_curated_emotion(emotion_names)
 
             movement_manager = deps.movement_manager
-            emotion_move = EmotionQueueMove(emotion_name, RECORDED_MOVES)
+            emotion_move = EmotionQueueMove(emotion_name, moves)
             movement_manager.queue_move(emotion_move)
+
+            # The library bundles a matching .wav per move; the queue-move path only evaluates
+            # poses, so emotions played half-mute (gap-map Stufe 1). Route the sound through the
+            # handler's audio path if the seam is set (AGENT_EMOTION_SOUNDS=0 to disable).
+            if os.getenv("AGENT_EMOTION_SOUNDS", "1").strip().lower() not in ("0", "false", "no", "off"):
+                try:
+                    sound = getattr(moves.get(emotion_name), "sound_path", None)
+                    player = getattr(deps, "play_sound_path", None)
+                    if sound and callable(player):
+                        player(str(sound))
+                except Exception:
+                    logger.debug("emotion sound dispatch failed", exc_info=True)
 
             return {"status": "queued", "emotion": emotion_name}
 

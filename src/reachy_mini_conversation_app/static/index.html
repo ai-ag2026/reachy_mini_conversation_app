@@ -223,8 +223,136 @@
         </div>
         <p id="personality-status" class="status" role="status" aria-live="polite" aria-atomic="true"></p>
       </div>
+
+      <div id="controls-panel" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Live</p>
+            <h2>Reachy controls</h2>
+          </div>
+        </div>
+        <p class="muted">Flip live — takes effect on the next turn, no restart needed.</p>
+        <style>
+          .toggle-grid { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+          .toggle-row { display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 14px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; }
+          .toggle-row input { width: 38px; height: 22px; }
+        </style>
+        <div id="toggle-grid" class="toggle-grid">
+          <label class="toggle-row"><span>Microphone</span><input type="checkbox" data-toggle="mic" /></label>
+          <label class="toggle-row"><span>Vision (camera)</span><input type="checkbox" data-toggle="vision" /></label>
+          <label class="toggle-row"><span>Tools</span><input type="checkbox" data-toggle="tools" /></label>
+          <label class="toggle-row"><span>Person recognition</span><input type="checkbox" data-toggle="person_id" /></label>
+        </div>
+        <p id="toggle-status" class="status" role="status" aria-live="polite" aria-atomic="true"></p>
+      </div>
+
+      <div id="runtime-panel" class="panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Live</p>
+            <h2>Runtime &amp; latency</h2>
+          </div>
+        </div>
+        <p class="muted">Tune latency &amp; volume — takes effect next turn, no restart. Persisted to .env.</p>
+        <style>
+          .setting-row { display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 14px; border: 1px solid rgba(255,255,255,.12); border-radius: 12px;
+            gap: 12px; margin-top: 10px; }
+          .setting-row select, .setting-row input[type=number] { width: 130px; }
+          .setting-row input[type=range] { width: 150px; }
+          .setting-row input[type=checkbox] { width: 38px; height: 22px; }
+        </style>
+        <div id="setting-grid">
+          <label class="setting-row"><span>Reasoning effort</span>
+            <select data-setting="reasoning_effort">
+              <option value="minimal">minimal (fastest)</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high (slowest)</option>
+            </select></label>
+          <label class="setting-row"><span>Quick-take delay (s)</span>
+            <input type="number" step="0.1" min="0" max="5" data-setting="quicktake_delay_s" /></label>
+          <label class="setting-row"><span>First-audio budget (s)</span>
+            <input type="number" step="1" min="0" max="120" data-setting="first_audio_budget_s" /></label>
+          <label class="setting-row"><span>Volume (output gain)</span>
+            <input type="range" step="0.05" min="0.1" max="3" data-setting="output_gain" /></label>
+          <label class="setting-row"><span>Quick-take opener</span>
+            <input type="checkbox" data-setting="quicktake" /></label>
+          <label class="setting-row"><span>Tool status spoken</span>
+            <input type="checkbox" data-setting="tool_status" /></label>
+        </div>
+        <p id="setting-status" class="status" role="status" aria-live="polite" aria-atomic="true"></p>
+      </div>
     </div>
 
     <script src="/static/main.js"></script>
+    <script>
+      (function () {
+        const statusEl = () => document.getElementById("toggle-status");
+        const setStatus = (m) => { const e = statusEl(); if (e) e.textContent = m; };
+        function apply(state) {
+          if (!state) return;
+          document.querySelectorAll("[data-toggle]").forEach((cb) => {
+            const k = cb.getAttribute("data-toggle");
+            if (state && k in state) cb.checked = !!state[k];
+          });
+        }
+        async function load() {
+          try { const r = await fetch("/toggles"); if (r.ok) apply(await r.json()); } catch (e) {}
+        }
+        document.querySelectorAll("[data-toggle]").forEach((cb) => {
+          cb.addEventListener("change", async () => {
+            const name = cb.getAttribute("data-toggle");
+            try {
+              const r = await fetch("/toggles", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, on: cb.checked }),
+              });
+              if (r.ok) { apply(await r.json()); setStatus(name + " → " + (cb.checked ? "on" : "off")); }
+              else { setStatus("failed: " + name); load(); }
+            } catch (e) { setStatus("error: " + name); load(); }
+          });
+        });
+        load();
+      })();
+    </script>
+    <script>
+      (function () {
+        const statusEl = () => document.getElementById("setting-status");
+        const setStatus = (m) => { const e = statusEl(); if (e) e.textContent = m; };
+        const val = (el) => {
+          if (el.type === "checkbox") return el.checked;
+          if (el.type === "number" || el.type === "range") return parseFloat(el.value);
+          return el.value;
+        };
+        function apply(state) {
+          if (!state) return;
+          document.querySelectorAll("[data-setting]").forEach((el) => {
+            const k = el.getAttribute("data-setting");
+            if (!(k in state)) return;
+            if (el.type === "checkbox") el.checked = !!state[k];
+            else el.value = state[k];
+          });
+        }
+        async function load() {
+          try { const r = await fetch("/settings"); if (r.ok) apply(await r.json()); } catch (e) {}
+        }
+        document.querySelectorAll("[data-setting]").forEach((el) => {
+          el.addEventListener("change", async () => {
+            const name = el.getAttribute("data-setting");
+            try {
+              const r = await fetch("/settings", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, value: val(el) }),
+              });
+              if (r.ok) { apply(await r.json()); setStatus(name + " → " + val(el)); }
+              else { setStatus("failed: " + name); load(); }
+            } catch (e) { setStatus("error: " + name); load(); }
+          });
+        });
+        load();
+      })();
+    </script>
   </body>
   </html>

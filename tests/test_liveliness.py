@@ -1,0 +1,221 @@
+# ruff: noqa: D103
+"""Gap-map Stufe 1 (2026-07-02): idle actions, listening sync, emotion sounds, chirp library."""
+from __future__ import annotations
+
+import asyncio
+import io
+import wave
+
+import numpy as np
+import pytest
+
+from reachy_mini_conversation_app.liveliness import (
+    IdleActionRunner,
+    chirp_wav_bytes,
+    wav_file_to_pcm,
+)
+
+
+def test_chirp_wav_bytes_is_valid_wav():
+    data = chirp_wav_bytes("acknowledge")
+    with wave.open(io.BytesIO(data), "rb") as w:
+        assert w.getframerate() == 24000
+        assert w.getnchannels() == 1
+        assert w.getsampwidth() == 2
+        assert w.getnframes() > 1000
+
+
+def test_wav_file_to_pcm_roundtrip(tmp_path):
+    p = tmp_path / "t.wav"
+    pcm_in = (np.sin(np.linspace(0, 100, 4800)) * 20000).astype(np.int16)
+    with wave.open(str(p), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(pcm_in.tobytes())
+    sr, pcm = wav_file_to_pcm(str(p))
+    assert sr == 24000 and len(pcm) == 4800
+    assert wav_file_to_pcm(str(tmp_path / "missing.wav")) is None
+
+
+@pytest.mark.asyncio
+async def test_idle_runner_fires_only_when_idle(monkeypatch):
+    """Busy handler / recent activity must suppress actions; a quiet stretch fires exactly one
+    (cooldown suppresses the rest)."""
+    import reachy_mini_conversation_app.liveliness as lv
+
+    dispatched = []
+
+    async def fake_dispatch(deps, name, args):
+        dispatched.append(name)
+        return {"status": "queued"}
+
+    monkeypatch.setattr(
+        "reachy_mini_conversation_app.tools.core_tools.dispatch_tool_call", fake_dispatch
+    )
+    monkeypatch.setattr(
+        "reachy_mini_conversation_app.idle_policy.choose_idle_tool_call",
+        lambda names, **k: ("play_emotion", {}),
+    )
+    monkeypatch.setenv("AGENT_IDLE_ACTIONS", "1")
+
+    class _Deps:
+        movement_manager = None
+
+    busy = {"v": True}
+    runner = IdleActionRunner(
+        _Deps(), is_busy=lambda: busy["v"], idle_after_s=0.05, cooldown_s=10.0, check_interval_s=0.02
+    )
+    runner.start()
+    await asyncio.sleep(0.1)
+    assert dispatched == []  # busy the whole time
+
+    busy["v"] = False
+    await asyncio.sleep(0.3)  # idle_after (0.05) passes -> one action; cooldown blocks more
+    runner.stop()
+    assert dispatched == ["play_emotion"]
+    assert lv is not None
+
+
+@pytest.mark.asyncio
+async def test_idle_runner_respects_disable_env(monkeypatch):
+    monkeypatch.setenv("AGENT_IDLE_ACTIONS", "0")
+
+    class _Deps:
+        movement_manager = None
+
+    runner = IdleActionRunner(_Deps(), is_busy=lambda: False, idle_after_s=0.01, check_interval_s=0.01)
+    runner.start()
+    assert runner._task is None  # disabled -> no task
+
+
+def test_goto_cartoon_easing_overshoots():
+    from reachy_mini_conversation_app.dance_emotion_moves import GotoQueueMove
+
+    start = np.eye(4, dtype=np.float32)
+    target = np.eye(4, dtype=np.float32)
+    target[0, 3] = 0.02
+    goto = GotoQueueMove(
+        target_head_pose=target, start_head_pose=start,
+        target_antennas=(0.0, 0.0), start_antennas=(0.0, 0.0),
+        target_body_yaw=0.0, start_body_yaw=0.0,
+        duration=1.0, interpolation="cartoon",
+    )
+    xs = [goto.evaluate(t)[0][0, 3] for t in np.linspace(0.05, 0.98, 30)]
+    assert max(xs) > 0.02 + 1e-4  # cartoon overshoots past the target, then settles
+    # linear default stays monotonic (behavior-neutral)
+    goto_lin = GotoQueueMove(
+        target_head_pose=target, start_head_pose=start,
+        target_antennas=(0.0, 0.0), start_antennas=(0.0, 0.0),
+        target_body_yaw=0.0, start_body_yaw=0.0, duration=1.0, interpolation="linear",
+    )
+    xs_lin = [goto_lin.evaluate(t)[0][0, 3] for t in np.linspace(0.05, 0.98, 30)]
+    assert max(xs_lin) <= 0.02 + 1e-9
+
+
+@pytest.mark.asyncio
+async def test_play_emotion_routes_bundled_sound(monkeypatch, tmp_path):
+    """The tool must hand the move's .wav to the deps seam (AGENT_EMOTION_SOUNDS on)."""
+    monkeypatch.setenv("AGENT_EMOTION_SOUNDS", "1")
+    import reachy_mini_conversation_app.tools.play_emotion as pe
+
+    wav = tmp_path / "happy1.wav"
+    wav.write_bytes(chirp_wav_bytes("affirm"))
+
+    class _Rec:
+        description = "happy"
+        sound_path = str(wav)
+
+        def evaluate(self, t):
+            return np.eye(4), (0.0, 0.0), 0.0
+
+        duration = 1.0
+
+    class _Lib:
+        def list_moves(self):
+            return ["happy1"]
+
+        def get(self, name):
+            return _Rec()
+
+    monkeypatch.setattr(pe, "_get_recorded_moves", lambda: _Lib())
+
+    played = []
+
+    class _MM:
+        def queue_move(self, m):
+            played.append("move")
+
+    class _Deps:
+        movement_manager = _MM()
+        play_sound_path = lambda self, p: played.append(("sound", p))  # noqa: E731
+
+    deps = _Deps()
+    deps.play_sound_path = lambda p: played.append(("sound", p))
+    tool = pe.PlayEmotion()
+    res = await tool(deps, emotion="happy")
+    assert res.get("status") == "queued"
+    assert "move" in played
+    assert ("sound", str(wav)) in played
+
+
+# ── Stufe 2 ────────────────────────────────────────────────────────────────────
+
+
+def test_doa_mapping():
+    import math
+    from reachy_mini_conversation_app.liveliness import map_doa_angle_to_direction
+
+    assert map_doa_angle_to_direction(0.1) == "left"
+    assert map_doa_angle_to_direction(math.pi - 0.1) == "right"
+    assert map_doa_angle_to_direction(math.pi / 2) == "front"
+    assert map_doa_angle_to_direction(math.pi / 2 + 0.2) == "front"  # inside deadzone
+
+
+def test_emotion_cues_sparse_and_matching():
+    from reachy_mini_conversation_app.emotion_cues import emotion_for_turn
+
+    assert emotion_for_turn("hallo agent", "Hallo Operator.") == "greeting"
+    assert emotion_for_turn("wie lief der test", "Perfekt, alles erledigt.") == "success"
+    assert emotion_for_turn("was ist 2+2", "Vier.") is None  # normal turns: NO emote
+    assert emotion_for_turn("", "Leider ist der Deploy fehlgeschlagen.") == "downcast"
+
+
+@pytest.mark.asyncio
+async def test_speech_sway_applies_and_clears(monkeypatch):
+    monkeypatch.setenv("AGENT_SPEECH_SWAY", "1")
+    from reachy_mini_conversation_app.liveliness import SpeechSway
+
+    calls = []
+
+    class _MM:
+        def set_external_offsets(self, offsets, antennas=(0.0, 0.0)):
+            calls.append(antennas)
+
+    sway = SpeechSway(_MM())
+    sway.start()
+    try:
+        loud = (np.sin(np.linspace(0, 300, 24000)) * 20000).astype(np.int16)  # 1s loud tone
+        sway.feed(24000, loud, play_at=asyncio.get_event_loop().time() * 0 + __import__("time").monotonic())
+        await asyncio.sleep(0.3)
+        moving = [a for a in calls if abs(a[0]) > 0.001]
+        assert moving, "sway should drive the antennas for a loud segment"
+        assert all(abs(a[0] + a[1]) < 1e-9 for a in moving)  # opposite directions
+        calls.clear()
+        sway.clear()
+        assert calls and calls[-1] == (0.0, 0.0)  # flush releases immediately
+    finally:
+        sway.stop()
+
+
+def test_imu_magnitude_extraction():
+    from reachy_mini_conversation_app.liveliness import ImuWatcher
+
+    class _V:
+        x, y, z = 0.0, 0.0, 9.81
+
+    class _D:
+        accel = _V()
+
+    assert abs(ImuWatcher._accel_magnitude(_D()) - 9.81) < 1e-6
+    assert ImuWatcher._accel_magnitude(object()) is None

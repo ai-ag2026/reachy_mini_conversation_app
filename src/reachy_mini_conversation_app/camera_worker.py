@@ -26,6 +26,7 @@ class CameraWorker:
         self.head_tracker = head_tracker
 
         self.latest_frame: NDArray[np.uint8] | None = None
+        self.latest_frame_ts: float = 0.0  # monotonic time of the last fresh frame
         self.frame_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -49,10 +50,17 @@ class CameraWorker:
 
         self.previous_head_tracking_state = self.is_head_tracking_enabled
 
-    def get_latest_frame(self) -> NDArray[np.uint8] | None:
-        """Get the latest frame (thread-safe)."""
+    def get_latest_frame(self, max_age_s: float = 5.0) -> NDArray[np.uint8] | None:
+        """Get the latest frame (thread-safe), or None if it is older than ``max_age_s``.
+
+        Staleness gate (audit 2026-07-02): after a camera/producer stall the last frame froze
+        forever and vision answered "what I see right now" from an arbitrarily old scene.
+        ``max_age_s=0`` disables the check.
+        """
         with self.frame_lock:
             if self.latest_frame is None:
+                return None
+            if max_age_s > 0 and self.latest_frame_ts and (time.monotonic() - self.latest_frame_ts) > max_age_s:
                 return None
             return self.latest_frame.copy()
 
@@ -96,13 +104,14 @@ class CameraWorker:
 
         while not self._stop_event.is_set():
             try:
-                current_time = time.time()
+                current_time = time.monotonic()  # wall clock jumped with NTP -> frozen/snapping tracking (P3)
                 frame = self.reachy_mini.media.get_frame()
 
                 if frame is not None:
                     # Keep the latest frame available for tools and UI consumers
                     with self.frame_lock:
                         self.latest_frame = frame
+                        self.latest_frame_ts = time.monotonic()
 
                     if self.previous_head_tracking_state and not self.is_head_tracking_enabled:
                         # Reuse the face-lost interpolation path to return smoothly to neutral
@@ -123,9 +132,9 @@ class CameraWorker:
                             h, w, _ = frame.shape
                             eye_center_norm = (eye_center + 1) / 2
                             eye_center_pixels = [
-                                eye_center_norm[0] * w,
-                                eye_center_norm[1] * h,
-                            ]
+                                min(max(eye_center_norm[0] * w, 1.0), w - 1.0),
+                                min(max(eye_center_norm[1] * h, 1.0), h - 1.0),
+                            ]  # clamp: SDK look_at_image asserts 0 < u < w (edge face crashed it, P3)
 
                             target_pose = self.reachy_mini.look_at_image(
                                 eye_center_pixels[0],

@@ -13,6 +13,8 @@ from reachy_mini_conversation_app.utils import (
 
 def test_initialize_camera_and_vision_propagates_local_vision_init_failures() -> None:
     """Explicit local vision requests should preserve unexpected initialization errors."""
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
     args = argparse.Namespace(
         no_camera=False,
         head_tracker=None,

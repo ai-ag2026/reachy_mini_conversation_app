@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 import sys
 import logging
 import argparse
@@ -25,10 +26,13 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     parser.add_argument(
         "--head-tracker",
         choices=["yolo", "mediapipe"],
-        default=None,
+        # The daemon launches the app WITHOUT CLI flags, so an env default is the only way to
+        # enable face tracking on the robot (gap-map Stufe 2). Empty/unset = disabled, as before.
+        default=(os.getenv("AGENT_HEAD_TRACKER", "").strip().lower() or None),
         help=(
             "Optional head-tracking backend: yolo uses a local face detector in a subprocess, "
-            "mediapipe uses reachy_mini_toolbox in process. Disabled by default."
+            "mediapipe uses reachy_mini_toolbox in process. Disabled by default; "
+            "env default: AGENT_HEAD_TRACKER."
         ),
     )
     parser.add_argument("--no-camera", default=False, action="store_true", help="Disable camera usage")

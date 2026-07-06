@@ -88,6 +88,7 @@ GEMINI_AVAILABLE_VOICES: list[str] = [
 OPENAI_BACKEND = "openai"
 GEMINI_BACKEND = "gemini"
 HF_BACKEND = "huggingface"
+LOCAL_BACKEND = "local"
 DEFAULT_BACKEND_PROVIDER = HF_BACKEND
 HF_REALTIME_CONNECTION_MODE_ENV = "HF_REALTIME_CONNECTION_MODE"
 HF_REALTIME_WS_URL_ENV = "HF_REALTIME_WS_URL"
@@ -117,16 +118,19 @@ DEFAULT_MODEL_NAME_BY_BACKEND = {
     OPENAI_BACKEND: "gpt-realtime-2",
     GEMINI_BACKEND: "gemini-3.1-flash-live-preview",
     HF_BACKEND: HF_DEFAULTS.model_name,
+    LOCAL_BACKEND: os.getenv("AGENT_MODEL", "local-agent"),
 }
 BACKEND_LABEL_BY_PROVIDER = {
     OPENAI_BACKEND: "OpenAI Realtime",
     GEMINI_BACKEND: "Gemini Live",
     HF_BACKEND: "Hugging Face",
+    LOCAL_BACKEND: "Local Agent",
 }
 DEFAULT_VOICE_BY_BACKEND = {
     OPENAI_BACKEND: OPENAI_DEFAULT_VOICE,
     GEMINI_BACKEND: "Kore",
     HF_BACKEND: HF_DEFAULTS.voice,
+    LOCAL_BACKEND: os.getenv("AGENT_TTS_VOICE", "default"),
 }
 
 logger = logging.getLogger(__name__)
@@ -508,6 +512,8 @@ def get_available_voices_for_backend(backend: str | None = None) -> list[str]:
         return list(GEMINI_AVAILABLE_VOICES)
     if normalized_backend == HF_BACKEND:
         return list(HF_AVAILABLE_VOICES)
+    if normalized_backend == LOCAL_BACKEND:
+        return [DEFAULT_VOICE_BY_BACKEND[LOCAL_BACKEND]]
     return list(AVAILABLE_VOICES)
 
 

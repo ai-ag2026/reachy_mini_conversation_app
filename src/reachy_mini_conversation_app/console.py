@@ -15,7 +15,8 @@ import sys
 import time
 import asyncio
 import logging
-from typing import List, Callable, Optional
+import threading
+from typing import Any, List, Callable, Optional
 from pathlib import Path
 
 from fastrtc import AdditionalOutputs, audio_to_float32
@@ -24,6 +25,7 @@ from scipy.signal import resample
 from reachy_mini import ReachyMini
 from reachy_mini_conversation_app.config import (
     HF_BACKEND,
+    LOCAL_BACKEND,
     GEMINI_BACKEND,
     LOCKED_PROFILE,
     OPENAI_BACKEND,
@@ -107,6 +109,9 @@ class LocalStream:
         self._backend_connection_state = "not_started"
         self._backend_error: str | None = None
         self._backend_retry_delay = BACKEND_RETRY_DELAY_SECONDS
+        # Serialize .env read-modify-write: routes run in the FastAPI threadpool, so two
+        # concurrent dashboard posts could otherwise lose each other's update (audit 2026-07-02).
+        self._env_write_lock = threading.Lock()
         self._install_handler(handler)
 
     def _install_handler(self, handler: ConversationHandler) -> None:
@@ -120,10 +125,10 @@ class LocalStream:
         inst = env_path.parent
         try:
             if env_path.exists():
-                try:
-                    return env_path.read_text(encoding="utf-8").splitlines()
-                except Exception:
-                    return []
+                # No fallback-to-empty here: returning [] on a transient read error would make
+                # _persist_env_values rewrite the .env with ONLY the updates — total loss of every
+                # other key (API_SERVER_KEY, BACKEND_PROVIDER, all AGENT_*) (audit 2026-07-02).
+                return env_path.read_text(encoding="utf-8").splitlines()
             template_text = None
             ex = inst / ".env.example"
             if ex.exists():
@@ -243,6 +248,10 @@ class LocalStream:
 
     def _has_required_key(self, backend: str) -> bool:
         """Return whether the requested backend has its required credential."""
+        if backend == LOCAL_BACKEND:
+            # AGENT auth is owned by the HermesVoiceClient (API_SERVER_KEY in the
+            # instance .env); no OpenAI-style key gate — never block launch().
+            return True
         if backend == GEMINI_BACKEND:
             return self._has_key(config.GEMINI_API_KEY)
         if backend == HF_BACKEND:
@@ -252,6 +261,8 @@ class LocalStream:
     @staticmethod
     def _requirement_name(backend: str) -> str:
         """Return the env var users need for a backend, if any."""
+        if backend == LOCAL_BACKEND:
+            return "API_SERVER_KEY"
         if backend == GEMINI_BACKEND:
             return "GEMINI_API_KEY"
         if backend == HF_BACKEND:
@@ -263,8 +274,16 @@ class LocalStream:
         self._persist_env_values({env_name: value})
 
     def _persist_env_values(self, updates: dict[str, str]) -> None:
-        """Persist non-empty environment values in memory and in the instance `.env`."""
-        normalized_updates = {name: (value or "").strip() for name, value in updates.items()}
+        """Persist non-empty environment values in memory and in the instance `.env`.
+
+        Hardened (audit 2026-07-02): values are single-line (a stray newline would inject extra
+        env entries / corrupt the file), read-modify-write is serialized under a lock (routes run
+        in the FastAPI threadpool — concurrent posts lost updates), and the write is atomic
+        (tmp + os.replace on the real instance file; the app-root .env symlink keeps pointing at
+        the same path, so it stays intact).
+        """
+        normalized_updates = {name: (value or "").strip().splitlines()[0].strip() if (value or "").strip() else ""
+                              for name, value in updates.items()}
         normalized_updates = {name: value for name, value in normalized_updates.items() if value}
         if not normalized_updates:
             return
@@ -279,20 +298,24 @@ class LocalStream:
         if not self._instance_path:
             return
         try:
-            inst = Path(self._instance_path)
-            env_path = inst / ".env"
-            lines = self._read_env_lines(env_path)
-            for env_name, value in normalized_updates.items():
-                replaced = False
-                for i, ln in enumerate(lines):
-                    if ln.strip().startswith(f"{env_name}="):
-                        lines[i] = f"{env_name}={value}"
-                        replaced = True
-                        break
-                if not replaced:
-                    lines.append(f"{env_name}={value}")
-            final_text = "\n".join(lines) + "\n"
-            env_path.write_text(final_text, encoding="utf-8")
+            with self._env_write_lock:
+                inst = Path(self._instance_path)
+                env_path = inst / ".env"
+                lines = self._read_env_lines(env_path)
+                for env_name, value in normalized_updates.items():
+                    replaced = False
+                    for i, ln in enumerate(lines):
+                        if ln.strip().startswith(f"{env_name}="):
+                            lines[i] = f"{env_name}={value}"
+                            replaced = True
+                            break
+                    if not replaced:
+                        lines.append(f"{env_name}={value}")
+                final_text = "\n".join(lines) + "\n"
+                target = env_path.resolve() if env_path.exists() else env_path
+                tmp = target.with_name(target.name + ".tmp-write")
+                tmp.write_text(final_text, encoding="utf-8")
+                os.replace(tmp, target)
             logger.info("Persisted %s to %s", ", ".join(sorted(normalized_updates)), env_path)
 
             try:
@@ -316,19 +339,23 @@ class LocalStream:
             return
 
         try:
-            lines = env_path.read_text(encoding="utf-8").splitlines()
-            filtered_lines = [
-                line
-                for line in lines
-                if not any(line.strip().startswith(f"{env_name}=") for env_name in normalized_names)
-            ]
-            if filtered_lines == lines:
-                return
+            with self._env_write_lock:
+                lines = env_path.read_text(encoding="utf-8").splitlines()
+                filtered_lines = [
+                    line
+                    for line in lines
+                    if not any(line.strip().startswith(f"{env_name}=") for env_name in normalized_names)
+                ]
+                if filtered_lines == lines:
+                    return
 
-            final_text = "\n".join(filtered_lines)
-            if final_text:
-                final_text += "\n"
-            env_path.write_text(final_text, encoding="utf-8")
+                final_text = "\n".join(filtered_lines)
+                if final_text:
+                    final_text += "\n"
+                target = env_path.resolve()
+                tmp = target.with_name(target.name + ".tmp-write")
+                tmp.write_text(final_text, encoding="utf-8")
+                os.replace(tmp, target)
             logger.info("Removed %s from %s", ", ".join(normalized_names), env_path)
         except Exception as e:
             logger.warning("Failed to remove %s: %s", ", ".join(normalized_names), e)
@@ -407,7 +434,21 @@ class LocalStream:
         return read_startup_settings(self._instance_path).profile
 
     async def apply_personality(self, profile: Optional[str]) -> str:
-        """Apply a personality by updating config and restarting the active backend."""
+        """Apply a personality by updating config and restarting the active backend.
+
+        AGENT backend: delegate to the handler's own apply_personality (gateway toolset switch,
+        e.g. Work mode) and skip the restart — the mounted personality routes prefer THIS callback,
+        so without the delegation the handler method was unreachable from the dashboard and the
+        "Work mode" toolset drop silently never happened (audit 2026-07-02).
+        """
+        handler_apply = getattr(self.handler, "apply_personality", None)
+        if get_backend_choice() == LOCAL_BACKEND and callable(handler_apply):
+            try:
+                from reachy_mini_conversation_app.config import set_custom_profile
+                set_custom_profile(profile)  # persist the dashboard selection
+            except Exception:
+                logger.warning("set_custom_profile failed for %r", profile, exc_info=True)
+            return await handler_apply(profile)
         try:
             from reachy_mini_conversation_app.config import set_custom_profile
             from reachy_mini_conversation_app.prompts import get_session_voice, get_session_instructions
@@ -484,6 +525,14 @@ class LocalStream:
         class ApiKeyPayload(BaseModel):
             openai_api_key: str
 
+        class TogglePayload(BaseModel):
+            name: str
+            on: bool
+
+        class SettingPayload(BaseModel):
+            name: str
+            value: Any
+
         class BackendPayload(BaseModel):
             backend: str
             api_key: Optional[str] = None
@@ -556,6 +605,49 @@ class LocalStream:
                 ready = False
             return JSONResponse({"ready": ready})
 
+        # GET /toggles -> live switch state ; POST /toggles {name,on} -> flip one (no restart)
+        @self._settings_app.get("/toggles")
+        def _get_toggles() -> JSONResponse:
+            h = self.handler
+            return JSONResponse(h.get_toggles() if hasattr(h, "get_toggles") else {})
+
+        @self._settings_app.post("/toggles")
+        def _set_toggle(payload: TogglePayload) -> JSONResponse:
+            h = self.handler
+            if not hasattr(h, "set_toggle"):
+                return JSONResponse({"error": "toggles_unsupported"}, status_code=400)
+            try:
+                return JSONResponse(h.set_toggle(payload.name, bool(payload.on)))
+            except KeyError:
+                return JSONResponse({"error": "unknown_toggle"}, status_code=400)
+
+        # GET /settings -> live runtime knobs ; POST /settings {name,value} -> set one (no restart) and
+        # persist it to .env so it survives a restart.
+        @self._settings_app.get("/settings")
+        def _get_settings() -> JSONResponse:
+            h = self.handler
+            return JSONResponse(h.get_settings() if hasattr(h, "get_settings") else {})
+
+        @self._settings_app.post("/settings")
+        def _set_setting(payload: SettingPayload) -> JSONResponse:
+            h = self.handler
+            if not hasattr(h, "set_setting"):
+                return JSONResponse({"error": "settings_unsupported"}, status_code=400)
+            try:
+                state = h.set_setting(payload.name, payload.value)
+            except KeyError:
+                return JSONResponse({"error": "unknown_setting"}, status_code=400)
+            except (ValueError, TypeError):
+                return JSONResponse({"error": "invalid_value"}, status_code=400)
+            # Persist the underlying env var (live change already applied) so it outlives a restart.
+            env_name = getattr(h, "SETTING_ENV", {}).get(payload.name)
+            if env_name:
+                try:
+                    self._persist_env_value(env_name, os.environ.get(env_name, ""))
+                except Exception:  # persistence is best-effort; the live change already took effect
+                    logger.warning("could not persist setting %s to .env", payload.name)
+            return JSONResponse(state)
+
         # POST /openai_api_key -> set/persist key
         @self._settings_app.post("/openai_api_key")
         def _set_key(payload: ApiKeyPayload) -> JSONResponse:
@@ -568,7 +660,9 @@ class LocalStream:
         @self._settings_app.post("/backend_config")
         def _set_backend(payload: BackendPayload) -> JSONResponse:
             backend = payload.backend.strip().lower()
-            if backend not in {OPENAI_BACKEND, GEMINI_BACKEND, HF_BACKEND}:
+            # LOCAL_BACKEND included (audit 2026-07-02): without it the dashboard could switch AWAY
+            # from AGENT but never back — one-way footgun, recoverable only via SSH .env edit.
+            if backend not in {OPENAI_BACKEND, GEMINI_BACKEND, HF_BACKEND, LOCAL_BACKEND}:
                 return JSONResponse({"ok": False, "error": "invalid_backend"}, status_code=400)
 
             api_key = (payload.api_key or "").strip()
@@ -873,11 +967,29 @@ class LocalStream:
         input_sample_rate = self._robot.media.get_input_audio_samplerate()
         logger.debug(f"Audio recording started at {input_sample_rate} Hz")
 
+        rec_errors = 0
         while not self._stop_event.is_set():
-            audio_frame = self._robot.media.get_audio_sample()
-            if audio_frame is not None:
-                await self.handler.receive((input_sample_rate, audio_frame))
-            await asyncio.sleep(0)  # avoid busy loop
+            # Hardened hot loop (audit 2026-07-02): a single transient exception (SDK buf=None
+            # AttributeError, STT hiccup) must not kill the whole app via gather.
+            #
+            # get_audio_sample() is called INLINE (not via to_thread): the daemon appsink drops
+            # old buffers if we don't consume every ~64ms frame, and offloading the pull added
+            # enough scheduling latency to drop frames — which made a short "Stopp" fall into a
+            # gap so barge-in missed it (regression found 2026-07-02, reverted). The native 20ms
+            # pull is an acceptable inline block; barge onset needs every frame.
+            try:
+                audio_frame = self._robot.media.get_audio_sample()
+                if audio_frame is not None:
+                    await self.handler.receive((input_sample_rate, audio_frame))
+                    rec_errors = 0
+                await asyncio.sleep(0)  # yield
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                rec_errors += 1
+                if rec_errors <= 3 or rec_errors % 100 == 0:
+                    logger.warning("record_loop error #%d (continuing)", rec_errors, exc_info=True)
+                await asyncio.sleep(0.05)
 
     async def play_loop(self) -> None:
         """Fetch outputs from the handler: log text and play audio frames."""
@@ -899,36 +1011,45 @@ class LocalStream:
                         )
 
             elif isinstance(handler_output, tuple):
-                input_sample_rate, audio_data = handler_output
-                output_sample_rate = self._robot.media.get_output_audio_samplerate()
+                # Hardened (audit 2026-07-02): a transient resample/push error must not kill the
+                # whole app via gather — drop the frame and keep playing.
+                try:
+                    input_sample_rate, audio_data = handler_output
+                    output_sample_rate = self._robot.media.get_output_audio_samplerate()
 
-                # Skip empty audio frames
-                if audio_data.size == 0:
-                    continue
-
-                # Reshape if needed
-                if audio_data.ndim == 2:
-                    # Scipy channels last convention
-                    if audio_data.shape[1] > audio_data.shape[0]:
-                        audio_data = audio_data.T
-                    # Multiple channels -> Mono channel
-                    if audio_data.shape[1] > 1:
-                        audio_data = audio_data[:, 0]
-
-                # Cast if needed
-                audio_frame = audio_to_float32(audio_data)
-
-                # Resample if needed
-                if input_sample_rate != output_sample_rate:
-                    num_samples = int(len(audio_frame) * output_sample_rate / input_sample_rate)
-                    if num_samples == 0:
+                    # Skip empty audio frames
+                    if audio_data.size == 0:
                         continue
-                    audio_frame = resample(
-                        audio_frame,
-                        num_samples,
-                    )
 
-                self._robot.media.push_audio_sample(audio_frame)
+                    # Reshape if needed
+                    if audio_data.ndim == 2:
+                        # Scipy channels last convention
+                        if audio_data.shape[1] > audio_data.shape[0]:
+                            audio_data = audio_data.T
+                        # Multiple channels -> Mono channel
+                        if audio_data.shape[1] > 1:
+                            audio_data = audio_data[:, 0]
+
+                    # Cast if needed
+                    audio_frame = audio_to_float32(audio_data)
+
+                    # Resample if needed
+                    if input_sample_rate != output_sample_rate:
+                        num_samples = int(len(audio_frame) * output_sample_rate / input_sample_rate)
+                        if num_samples == 0:
+                            continue
+                        audio_frame = resample(
+                            audio_frame,
+                            num_samples,
+                        )
+
+                    self._robot.media.push_audio_sample(audio_frame)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self._play_errors = getattr(self, "_play_errors", 0) + 1
+                    if self._play_errors <= 3 or self._play_errors % 100 == 0:
+                        logger.warning("play_loop audio error #%d (frame dropped)", self._play_errors, exc_info=True)
 
             else:
                 logger.debug("Ignoring output type=%s", type(handler_output).__name__)

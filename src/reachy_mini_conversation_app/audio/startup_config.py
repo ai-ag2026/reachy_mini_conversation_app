@@ -11,8 +11,13 @@ WRITE_SETTLE_SECONDS = 0.1
 
 AUDIO_STARTUP_CONFIG: tuple[AudioStartupParameter, ...] = (
     ("PP_AGCMAXGAIN", (10.0,)),
-    ("PP_MIN_NS", (0.8,)),
-    ("PP_MIN_NN", (0.8,)),
+    # NS floors lowered 0.8 -> 0.6 for the AGENT backend (2026-06-24, live staged tuning with Operator):
+    # more aggressive XVF3800 noise suppression drops the room-noise floor (std ~0.027 -> ~0.020) so
+    # the local Silero VAD separates speech from background better, while VAD confidence stays strong
+    # (conf ~0.96) and Parakeet transcripts stay clean. 0.5 still works (conf ~0.63); <=0.4 makes
+    # detection borderline (conf ~0.43) by stripping speech energy — 0.6 is the chosen sweet spot.
+    ("PP_MIN_NS", (0.6,)),
+    ("PP_MIN_NN", (0.6,)),
     ("PP_GAMMA_E", (0.5,)),
     ("PP_GAMMA_ETAIL", (0.5,)),
     ("PP_NLATTENONOFF", (0,)),
