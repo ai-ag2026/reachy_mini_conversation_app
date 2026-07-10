@@ -16,6 +16,67 @@ from reachy_mini_conversation_app.vision.head_tracking import HeadTracker
 
 logger = logging.getLogger(__name__)
 
+# Hard floor for the camera-framerate cap: never throttle below this rate.
+CAMERA_FPS_FLOOR = 15
+
+
+def cap_camera_framerate(reachy_mini: ReachyMini, max_fps: int) -> bool:
+    """Cap the SDK's client-side camera pipeline to ``max_fps`` (never below ``CAMERA_FPS_FLOOR``).
+
+    The daemon streams at its native rate; the SDK client pipeline (unixfdsrc -> queue ->
+    convert -> appsink) converts EVERY frame and get_frame() paces the CameraWorker (and thus
+    any downstream tracker) at that rate. When there is no enum resolution between the native
+    rate and the desired cap and no daemon-side API for it, we insert a drop-only ``videorate``
+    before the appsink and re-cap its caps — frames are dropped before conversion/tracking, the
+    daemon side stays untouched. Uses the same close->modify->open cycle as the SDK's own
+    ``_apply_resolution``. Best-effort: returns False and leaves the native rate on any failure.
+    Run ONCE at app start (repeated media surgery is what crashes the producer)."""
+    max_fps = max(CAMERA_FPS_FLOOR, int(max_fps))
+    try:
+        from gi.repository import Gst
+
+        cam = getattr(getattr(reachy_mini, "media", None), "camera", None)
+        appsink = getattr(cam, "_appsink_video", None)
+        pipeline = getattr(cam, "pipeline", None)
+        if cam is None or appsink is None or pipeline is None:
+            logger.info("camera fps cap skipped (no gstreamer client camera)")
+            return False
+        native = int(cam.framerate)
+        if native <= max_fps:
+            logger.info("camera fps cap skipped (native %d <= cap %d)", native, max_fps)
+            return True
+
+        was_playing = pipeline.get_state(0).state == Gst.State.PLAYING
+        if was_playing:
+            cam.close()
+
+        upstream = appsink.get_static_pad("sink").get_peer().get_parent_element()
+        videorate = Gst.ElementFactory.make("videorate")
+        if videorate is None:
+            raise RuntimeError("videorate element unavailable")
+        videorate.set_property("drop-only", True)
+        videorate.set_property("max-rate", max_fps)
+
+        upstream.unlink(appsink)
+        pipeline.add(videorate)
+        upstream.link(videorate)
+        width, height = cam.resolution
+        appsink.set_property(
+            "caps",
+            Gst.Caps.from_string(
+                f"video/x-raw,format=BGR,width={width},height={height},framerate={max_fps}/1"
+            ),
+        )
+        videorate.link(appsink)
+
+        if was_playing:
+            cam.open()
+        logger.info("camera fps capped: %d -> %d (drop-only videorate)", native, max_fps)
+        return True
+    except Exception:
+        logger.warning("camera fps cap failed — staying at native rate", exc_info=True)
+        return False
+
 
 class CameraWorker:
     """Thread-safe camera worker with frame buffering and optional head tracking."""

@@ -108,6 +108,18 @@ def initialize_camera_and_vision(
                     f"Failed to initialize {args.head_tracker} head tracker: {e}",
                 ) from e
 
+        # Cap the client camera pipeline fps BEFORE the worker starts pulling frames
+        # (AGENT_CAMERA_MAX_FPS, default 15; hard floor 15; 0 = native rate). One-shot —
+        # repeated media surgery is what crashes the daemon producer.
+        try:
+            cap_raw = int(os.getenv("AGENT_CAMERA_MAX_FPS", "15") or "0")
+        except ValueError:
+            cap_raw = 15
+        if cap_raw > 0:
+            from reachy_mini_conversation_app.camera_worker import cap_camera_framerate
+
+            cap_camera_framerate(current_robot, cap_raw)
+
         camera_worker = CameraWorker(current_robot, head_tracker)
 
         if args.local_vision:
