@@ -568,6 +568,12 @@ async def dispatch_tool_call(tool_name: str, args_json: str, deps: ToolDependenc
     return await _dispatch_tool_call(tool_name, _safe_load_obj(args_json), deps)
 
 
+async def dispatch_tool_call_obj(tool_name: str, args: Dict[str, Any], deps: ToolDependencies) -> Dict[str, Any]:
+    """Dispatch a tool call whose args are already a dict (in-process callers:
+    idle actions, body surface, turn emotes) — no JSON round-trip."""
+    return await _dispatch_tool_call(tool_name, dict(args or {}), deps)
+
+
 async def dispatch_tool_call_with_manager(
     tool_name: str, args_json: str, deps: ToolDependencies, tool_manager: "BackgroundToolManager"
 ) -> Dict[str, Any]:

@@ -357,3 +357,25 @@ async def test_quicktake_disabled_emits_no_opener(monkeypatch):
 
     out = [s async for s in h._stream_with_lead_in("Frag was", slow_stream)]
     assert out == ["Antwort."]
+
+
+@pytest.mark.asyncio
+async def test_start_up_blocks_until_shutdown(monkeypatch) -> None:
+    """Regression: start_up() must block for the session lifetime (upstream base_realtime
+    contract). If it returns after setup instead, the console startup loop treats that as
+    "session ended" and re-runs it on a retry loop — spawning a fresh idle/IMU/sway/companion
+    watcher set each pass without stopping the old ones (task+CPU leak)."""
+    handler = AgentVoiceHandler(
+        ToolDependencies(reachy_mini=object(), movement_manager=_FakeMovementManager()),
+        agent_client=FakeTextAgentClient(reply="ok"),
+        tts_client=FakeAudioTtsClient(sample_rate=24000, audio=np.zeros(4, dtype=np.int16)),
+    )
+    monkeypatch.setattr(handler, "_ensure_stt", lambda: None)
+    monkeypatch.setattr(handler, "_ensure_barge_stt", lambda: None)
+
+    task = asyncio.create_task(handler.start_up())
+    await asyncio.sleep(0.2)
+    assert not task.done(), "start_up must block for the session lifetime"
+
+    await handler.shutdown()
+    await asyncio.wait_for(task, timeout=2.0)

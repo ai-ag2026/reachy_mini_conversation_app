@@ -110,7 +110,7 @@ class IdleActionRunner:
 
     async def _loop(self) -> None:
         from reachy_mini_conversation_app.idle_policy import choose_idle_tool_call
-        from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call
+        from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call_obj
 
         logger.info(
             "idle-action runner up (after %.0fs idle, cooldown %.0fs)", self.idle_after_s, self.cooldown_s
@@ -138,7 +138,7 @@ class IdleActionRunner:
                     continue  # stillness — chosen 60% of the time on purpose
                 logger.info("idle action: %s %s", name, args)
                 try:
-                    result = await dispatch_tool_call(self.deps, name, args)
+                    result = await dispatch_tool_call_obj(name, args, self.deps)
                     logger.info("idle action result: %s", result)
                 except asyncio.CancelledError:
                     raise
@@ -281,9 +281,9 @@ async def orient_to_speaker(deps: Any) -> str | None:
     if direction == "front":
         return None
     try:
-        from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call
+        from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call_obj
 
-        result = await dispatch_tool_call(deps, "move_head", {"direction": direction})
+        result = await dispatch_tool_call_obj("move_head", {"direction": direction}, deps)
         if "error" in result:
             return None
         logger.info("oriented toward speaker: %s (doa %.2f rad)", direction, float(doa["angle"]))

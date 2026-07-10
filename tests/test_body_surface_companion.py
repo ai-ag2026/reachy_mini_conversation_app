@@ -16,12 +16,12 @@ from reachy_mini_conversation_app.reachy_platform_client import ReachyPlatformCl
 async def test_body_surface_allowlist_and_mapping(monkeypatch):
     calls = []
 
-    async def fake_dispatch(deps, name, args):
+    async def fake_dispatch(name, args, deps):
         calls.append((name, args))
         return {"status": "queued"}
 
     monkeypatch.setattr(
-        "reachy_mini_conversation_app.tools.core_tools.dispatch_tool_call", fake_dispatch
+        "reachy_mini_conversation_app.tools.core_tools.dispatch_tool_call_obj", fake_dispatch
     )
 
     class _MM:
@@ -131,3 +131,31 @@ async def test_companion_watcher_only_fires_when_enabled(monkeypatch):
     await asyncio.sleep(0.15)  # two sustained speech polls -> one event (global cooldown after)
     w.stop()
     assert len(fired) == 1 and "gesprochen" in fired[0]
+
+
+@pytest.mark.asyncio
+async def test_run_body_action_reaches_real_dispatcher(monkeypatch):
+    """Regression: body_surface must call the dispatcher with the (name, args, deps) shape the
+    real core_tools dispatcher expects — a stub with the wrong argument order can stay green
+    while reachy_body emote/dance/look die with a TypeError at runtime. Route emote through the
+    REAL core_tools dispatcher."""
+    import reachy_mini_conversation_app.tools.core_tools as core_tools
+
+    core_tools.initialize_tools()
+    seen = []
+
+    async def probe_tool(deps, **kwargs):
+        seen.append((deps, kwargs))
+        return {"status": "queued"}
+
+    monkeypatch.setitem(core_tools.ALL_TOOLS, "play_emotion", probe_tool)
+
+    class _Deps:
+        movement_manager = None
+
+    deps = _Deps()
+    result = await run_body_action(deps, "emote", {"emotion": "happy"})
+    assert seen, "emote never reached the real dispatcher"
+    assert seen[0][0] is deps
+    assert seen[0][1] == {"emotion": "happy"}
+    assert "error" not in result

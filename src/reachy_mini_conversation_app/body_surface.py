@@ -30,20 +30,20 @@ async def run_body_action(
     if action not in ALLOWED_ACTIONS:
         return {"error": f"action {action!r} not allowed", "allowed": list(ALLOWED_ACTIONS)}
     try:
-        from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call
+        from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call_obj
 
         if action == "emote":
             emotion = str(params.get("emotion") or "random")
-            return await dispatch_tool_call(deps, "play_emotion", {"emotion": emotion})
+            return await dispatch_tool_call_obj("play_emotion", {"emotion": emotion}, deps)
 
         if action == "dance":
-            return await dispatch_tool_call(deps, "dance", {})
+            return await dispatch_tool_call_obj("dance", {}, deps)
 
         if action == "look":
             direction = str(params.get("direction") or "front").strip().lower()
             if direction not in _ALLOWED_DIRECTIONS:
                 return {"error": f"direction {direction!r} not allowed"}
-            return await dispatch_tool_call(deps, "move_head", {"direction": direction})
+            return await dispatch_tool_call_obj("move_head", {"direction": direction}, deps)
 
         if action == "stop":
             mm = getattr(deps, "movement_manager", None)

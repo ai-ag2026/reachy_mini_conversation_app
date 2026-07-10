@@ -414,6 +414,12 @@ class AgentVoiceHandler(ConversationHandler):
 
     async def start_up(self) -> None:
         self._closed = False
+        # Session-lifetime gate: the console startup loop treats a returning start_up() as
+        # "session ended" and re-invokes it after a retry delay — each pass would re-create the
+        # idle/IMU/sway/companion watchers WITHOUT stopping the old ones (task+CPU leak). The
+        # upstream contract (base_realtime) is that start_up() blocks for the whole session, so
+        # we block on this event until shutdown() releases us.
+        self._closed_event = asyncio.Event()
         # Platform transport: start the client's reconnect supervisor so the proactive channel
         # is alive from app start and survives gateway restarts — previously the ws only ever
         # connected inside the first user turn (audit 2026-07-02).
@@ -436,6 +442,16 @@ class AgentVoiceHandler(ConversationHandler):
         # Liveliness (gap-map Stufe 1): idle actions + daemon chirp library + emotion sounds.
         try:
             from reachy_mini_conversation_app.liveliness import IdleActionRunner, ensure_chirps_uploaded
+
+            # Defensive dedup: if a previous session's watchers are still alive (re-entry
+            # without an interleaved shutdown), stop them before creating replacements.
+            for attr in ("_idle_runner", "_speech_sway", "_imu_watcher", "_companion"):
+                obj = getattr(self, attr, None)
+                if obj is not None:
+                    try:
+                        obj.stop()
+                    except Exception:
+                        pass
 
             def _busy() -> bool:
                 if self._turn_active or self._closed:
@@ -472,6 +488,8 @@ class AgentVoiceHandler(ConversationHandler):
             self.deps.play_sound_path = self._play_wav_path
         except Exception:
             logger.warning("liveliness setup failed (continuing without)", exc_info=True)
+        # Block for the session lifetime (upstream start_up contract); shutdown() releases us.
+        await self._closed_event.wait()
 
     def _play_wav_path(self, path: str) -> None:
         """Queue a wav file (e.g. an emotion's bundled sound) on the spoken-audio path —
@@ -532,9 +550,9 @@ class AgentVoiceHandler(ConversationHandler):
         """Physical bump/lift detected: non-verbal startle (chirp + surprised emote)."""
         try:
             self._status_chirp("curious")
-            from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call
+            from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call_obj
 
-            t = asyncio.create_task(dispatch_tool_call(self.deps, "play_emotion", {"emotion": "surprised"}))
+            t = asyncio.create_task(dispatch_tool_call_obj("play_emotion", {"emotion": "surprised"}, self.deps))
             self._misc_tasks = getattr(self, "_misc_tasks", set())
             self._misc_tasks.add(t)
             t.add_done_callback(self._misc_tasks.discard)
@@ -577,6 +595,9 @@ class AgentVoiceHandler(ConversationHandler):
 
     async def shutdown(self) -> None:
         self._closed = True
+        ev = getattr(self, "_closed_event", None)
+        if ev is not None:
+            ev.set()  # release the blocked start_up() (session ends)
         for attr in ("_idle_runner", "_speech_sway", "_imu_watcher", "_companion"):
             obj = getattr(self, attr, None)
             if obj is not None:
@@ -1449,14 +1470,14 @@ class AgentVoiceHandler(ConversationHandler):
             return
         try:
             from reachy_mini_conversation_app.emotion_cues import emotion_for_turn
-            from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call
+            from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call_obj
 
             intent = emotion_for_turn(user_text, answer_text)
             if not intent:
                 return
             self._last_turn_emote = now
             logger.info("turn emote: %s", intent)
-            t = asyncio.create_task(dispatch_tool_call(self.deps, "play_emotion", {"emotion": intent}))
+            t = asyncio.create_task(dispatch_tool_call_obj("play_emotion", {"emotion": intent}, self.deps))
             self._misc_tasks = getattr(self, "_misc_tasks", set())
             self._misc_tasks.add(t)
             t.add_done_callback(self._misc_tasks.discard)

@@ -46,12 +46,12 @@ async def test_idle_runner_fires_only_when_idle(monkeypatch):
 
     dispatched = []
 
-    async def fake_dispatch(deps, name, args):
+    async def fake_dispatch(name, args, deps):
         dispatched.append(name)
         return {"status": "queued"}
 
     monkeypatch.setattr(
-        "reachy_mini_conversation_app.tools.core_tools.dispatch_tool_call", fake_dispatch
+        "reachy_mini_conversation_app.tools.core_tools.dispatch_tool_call_obj", fake_dispatch
     )
     monkeypatch.setattr(
         "reachy_mini_conversation_app.idle_policy.choose_idle_tool_call",
@@ -256,3 +256,53 @@ async def test_play_wav_path_non_wav_falls_back_to_daemon(monkeypatch):
 
     assert ("ensure", "/nonexistent/laughing2.ogg") in calls
     assert ("play", "laughing2.ogg") in calls
+
+
+@pytest.mark.asyncio
+async def test_idle_runner_reaches_real_dispatcher(monkeypatch):
+    """Regression: IdleActionRunner must call the dispatcher with the (name, args, deps) shape
+    that the real core_tools dispatcher expects — a stub with the wrong argument order can stay
+    green while every idle action dies with a TypeError at runtime. This one routes a sentinel
+    tool through the REAL core_tools dispatcher."""
+    import reachy_mini_conversation_app.tools.core_tools as core_tools
+
+    core_tools.initialize_tools()
+    seen = []
+
+    async def probe_tool(deps, **kwargs):
+        seen.append((deps, kwargs))
+        return {"status": "queued"}
+
+    monkeypatch.setitem(core_tools.ALL_TOOLS, "idle_probe", probe_tool)
+    monkeypatch.setattr(
+        "reachy_mini_conversation_app.idle_policy.choose_idle_tool_call",
+        lambda names, **k: ("idle_probe", {"direction": "front"}),
+    )
+    monkeypatch.setenv("AGENT_IDLE_ACTIONS", "1")
+
+    class _Deps:
+        movement_manager = None
+
+    deps = _Deps()
+    runner = IdleActionRunner(
+        deps, is_busy=lambda: False, idle_after_s=0.01, cooldown_s=10.0, check_interval_s=0.02
+    )
+    runner.start()
+    await asyncio.sleep(0.15)
+    runner.stop()
+
+    assert seen, "idle action never reached the real dispatcher"
+    assert seen[0][0] is deps
+    assert seen[0][1] == {"direction": "front"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_tool_call_obj_unknown_tool():
+    """dispatch_tool_call_obj must resolve names against the registry (not explode on deps)."""
+    from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call_obj
+
+    class _Deps:
+        movement_manager = None
+
+    result = await dispatch_tool_call_obj("definitely_not_a_tool", {"x": 1}, _Deps())
+    assert result == {"error": "unknown tool: definitely_not_a_tool"}
