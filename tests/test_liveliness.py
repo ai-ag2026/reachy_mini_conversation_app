@@ -219,3 +219,40 @@ def test_imu_magnitude_extraction():
 
     assert abs(ImuWatcher._accel_magnitude(_D()) - 9.81) < 1e-6
     assert ImuWatcher._accel_magnitude(object()) is None
+
+
+@pytest.mark.asyncio
+async def test_play_wav_path_non_wav_falls_back_to_daemon(monkeypatch):
+    """A non-WAV emotion sound (e.g. .ogg) must route through the daemon sound library instead
+    of being dropped when wav_file_to_pcm can't read it."""
+    from reachy_mini_conversation_app.agent_voice_handler import (
+        AgentVoiceHandler,
+        FakeAudioTtsClient,
+        FakeTextAgentClient,
+    )
+    from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
+
+    handler = AgentVoiceHandler(
+        ToolDependencies(reachy_mini=object(), movement_manager=None),
+        agent_client=FakeTextAgentClient(reply="ok"),
+        tts_client=FakeAudioTtsClient(sample_rate=24000, audio=np.zeros(4, dtype=np.int16)),
+    )
+
+    calls = []
+    monkeypatch.setattr(
+        "reachy_mini_conversation_app.liveliness.ensure_daemon_sound",
+        lambda p: calls.append(("ensure", p)) or "laughing2.ogg",
+    )
+    monkeypatch.setattr(
+        "reachy_mini_conversation_app.liveliness.play_daemon_sound",
+        lambda name: calls.append(("play", name)) or True,
+    )
+
+    handler._play_wav_path("/nonexistent/laughing2.ogg")  # wav load fails -> daemon fallback
+    for _ in range(20):
+        await asyncio.sleep(0.02)
+        if len(calls) == 2:
+            break
+
+    assert ("ensure", "/nonexistent/laughing2.ogg") in calls
+    assert ("play", "laughing2.ogg") in calls

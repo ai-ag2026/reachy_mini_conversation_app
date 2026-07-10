@@ -481,6 +481,23 @@ class AgentVoiceHandler(ConversationHandler):
 
             loaded = wav_file_to_pcm(str(path))
             if loaded is None:
+                # Some emotion libraries ship compressed formats (e.g. .ogg) that stdlib wave
+                # can't read. Fallback: route through the daemon sound library; GStreamer
+                # decodes it and daemon-side playback drives the head wobbler for free (same
+                # path as the chirps). Trade-off: duration unknown without decoding, so no
+                # playback-clock booking — firmware AEC covers self-hearing, as with daemon-
+                # side chirps.
+                from reachy_mini_conversation_app.liveliness import ensure_daemon_sound, play_daemon_sound
+
+                def _daemon_fallback(p: str = str(path)) -> None:
+                    name = ensure_daemon_sound(p)
+                    if name:
+                        play_daemon_sound(name)
+
+                t = asyncio.create_task(asyncio.to_thread(_daemon_fallback))
+                self._misc_tasks = getattr(self, "_misc_tasks", set())
+                self._misc_tasks.add(t)
+                t.add_done_callback(self._misc_tasks.discard)
                 return
             sr, pcm = loaded
             self.output_queue.put_nowait((sr, self._gain(pcm)))

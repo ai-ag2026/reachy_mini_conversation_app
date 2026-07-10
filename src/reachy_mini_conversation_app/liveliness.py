@@ -197,6 +197,33 @@ def ensure_chirps_uploaded(base_url: str = DAEMON_BASE_URL) -> int:
     return uploaded
 
 
+def ensure_daemon_sound(path: str, base_url: str = DAEMON_BASE_URL) -> str | None:
+    """Make a local sound file (any GStreamer-decodable format, e.g. the emotion library's
+    .ogg) available in the daemon sound library; returns the library file name or None.
+    Idempotent + sync — run off-thread. Library lives in /tmp (wiped on reboot)."""
+    import httpx
+
+    fname = os.path.basename(path)
+    try:
+        with httpx.Client(base_url=base_url, timeout=10.0) as client:
+            try:
+                existing = set(client.get("/api/media/sounds").json())
+            except Exception:
+                existing = set()
+            if not any(fname in str(e) for e in existing):
+                with open(path, "rb") as fh:
+                    r = client.post(
+                        "/api/media/sounds/upload",
+                        files={"file": (fname, fh.read(), "application/octet-stream")},
+                    )
+                r.raise_for_status()
+                logger.info("uploaded sound %s to the daemon library", fname)
+        return fname
+    except Exception as exc:
+        logger.warning("daemon sound upload %s failed: %r", fname, exc)
+        return None
+
+
 def play_daemon_sound(file_name: str, base_url: str = DAEMON_BASE_URL) -> bool:
     """Fire-and-forget daemon-side sound playback (drives the head wobbler for free).
     Sync + fast (local REST); returns False on failure so callers fall back."""
