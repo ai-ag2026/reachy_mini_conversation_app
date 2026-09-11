@@ -29,11 +29,14 @@ from __future__ import annotations
 import os
 import re
 import json
+import time
 import uuid
 import asyncio
 import logging
+import ipaddress
 from typing import Any
 from pathlib import Path
+from urllib.parse import urlsplit
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 from websockets.exceptions import ConnectionClosed
@@ -167,16 +170,38 @@ class ReachyPlatformConfig:
         """Initialize the configured state."""
         self.ws_url = os.getenv("AGENT_PLATFORM_WS_URL", "ws://127.0.0.1:8770/robot/reachy").strip()
         self.robot_id = os.getenv("AGENT_PLATFORM_ROBOT_ID", "reachy").strip() or "reachy"
-        self.api_key = os.getenv("AGENT_PLATFORM_API_KEY", "").strip()
-        key_file = os.getenv("AGENT_PLATFORM_API_KEY_FILE", "").strip()
-        if not self.api_key and key_file:
-            try:
-                self.api_key = Path(key_file).expanduser().read_text(encoding="utf-8").strip()
-            except OSError as exc:
-                logger.error("[reachy-platform] could not read API key file %s: %s", key_file, exc)
+        self.api_key = ""
+        self._missing_key_logged = False
+        self.reload_api_key()
+        endpoint = urlsplit(self.ws_url)
+        host = endpoint.hostname or ""
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = host.lower() == "localhost"
+        if endpoint.scheme == "ws" and not loopback:
+            logger.warning("[reachy-platform] non-loopback ws:// endpoint sends the API key in plaintext; use wss://")
         self.turn_timeout_s = _env_float("AGENT_PLATFORM_TURN_TIMEOUT_S", 90.0)
         self.connect_timeout_s = _env_float("AGENT_PLATFORM_CONNECT_TIMEOUT_S", 10.0)
         self.max_response_chars = _env_int("AGENT_MAX_RESPONSE_CHARS", 2000)
+
+    def reload_api_key(self) -> None:
+        """Reload credentials without logging contents or decoder exception details."""
+        self.api_key = os.getenv("AGENT_PLATFORM_API_KEY", "").strip()
+        key_file = os.getenv("AGENT_PLATFORM_API_KEY_FILE", "").strip()
+        error_type = ""
+        if not self.api_key and key_file:
+            try:
+                self.api_key = Path(key_file).expanduser().read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError) as exc:
+                error_type = type(exc).__name__
+        if not self.api_key and not self._missing_key_logged:
+            logger.error(
+                "[reachy-platform] no platform API key configured%s%s",
+                f" (file: {key_file})" if key_file else "",
+                f" ({error_type})" if error_type else "",
+            )
+        self._missing_key_logged = not bool(self.api_key)
 
 
 ProactiveHandler = Callable[[str], Awaitable[None]]
@@ -203,6 +228,9 @@ class ReachyPlatformClient:
         self._active_turn_id: str | None = None  # client turn id the reader routes frames by
         self._turn_lock = asyncio.Lock()  # single-flight interactive turns
         self._auth_rejected = False
+        self._auth_retry_at = 0.0
+        self._auth_backoff = 60.0
+        self._superseded = False
         self._closed = False  # final shutdown flag: stops the reconnect supervisor
         self._supervisor_task: asyncio.Task[Any] | None = None
         self._proactive_tasks: set[asyncio.Task[Any]] = set()  # keep refs (loop holds tasks weakly)
@@ -229,14 +257,17 @@ class ReachyPlatformClient:
 
     async def _supervise(self) -> None:
         backoff = 1.0
-        while not self._closed and not self._auth_rejected:
+        while not self._closed and not self._superseded:
             if self._ws is None:
                 try:
                     await self._ensure_session()
                     backoff = 1.0
                 except Exception as e:
-                    if self._auth_rejected:
+                    if self._superseded:
                         return
+                    if self._auth_retry_at > time.monotonic():
+                        await asyncio.sleep(min(1.0, self._auth_retry_at - time.monotonic()))
+                        continue
                     logger.info("[reachy-platform] reconnect failed (%s) — retry in %.0fs", e, backoff)
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2.0, 30.0)
@@ -250,9 +281,16 @@ class ReachyPlatformClient:
     # ── session / reader ────────────────────────────────────────────────────
     async def _ensure_session(self) -> None:
         async with self._connect_lock:
-            if self._auth_rejected:
-                raise ConnectionError("authentication rejected; restart the app after correcting the API key")
+            if self._superseded:
+                raise ConnectionError("connection superseded by another app instance")
+            if time.monotonic() < self._auth_retry_at:
+                raise ConnectionError("platform credentials awaiting scheduled retry")
             if self._ws is None:
+                self._auth_retry_at = 0.0
+                self.config.reload_api_key()
+                if not self.config.api_key:
+                    self._schedule_auth_retry()
+                    raise ConnectionError("no platform API key configured")
                 from websockets.asyncio.client import connect
 
                 ws = await asyncio.wait_for(connect(self.config.ws_url), timeout=self.config.connect_timeout_s)
@@ -281,15 +319,35 @@ class ReachyPlatformClient:
             if self._reader_task is None or self._reader_task.done():
                 self._reader_task = asyncio.create_task(self._reader())
 
-    def _check_auth_rejection(self, exc: Exception) -> bool:
-        """Latch policy closes without logging the peer's potentially sensitive reason."""
-        if isinstance(exc, ConnectionClosed) and exc.rcvd is not None and exc.rcvd.code == 1008:
+    def _schedule_auth_retry(self) -> None:
+        if self._auth_retry_at <= time.monotonic():
+            self._auth_retry_at = time.monotonic() + self._auth_backoff
+            self._auth_backoff = min(900.0, self._auth_backoff * 2.0)
+
+    def _check_close(self, code: int | None, reason: str | None) -> bool:
+        if code == 4001 or (code == 1000 and "superseded" in (reason or "").lower()):
+            if not self._superseded:
+                logger.error(
+                    "[reachy-platform] another client with robot_id=%s took over this connection; "
+                    "check for a duplicate app instance",
+                    self.config.robot_id,
+                )
+            self._superseded = True
+        elif code == 1008:
             if not self._auth_rejected:
                 logger.error(
-                    "[reachy-platform] authentication rejected (1008); correct the API key and restart the app"
+                    "[reachy-platform] authentication rejected (1008); retrying credentials in 60s, "
+                    "with exponential backoff up to 900s"
                 )
             self._auth_rejected = True
-        return self._auth_rejected
+            self._schedule_auth_retry()
+        return self._auth_rejected or self._superseded
+
+    def _check_auth_rejection(self, exc: Exception) -> bool:
+        """Handle policy closes without logging the peer's potentially sensitive reason."""
+        if isinstance(exc, ConnectionClosed) and exc.rcvd is not None:
+            return self._check_close(exc.rcvd.code, exc.rcvd.reason)
+        return self._auth_rejected or self._superseded
 
     def _route(self, frame: dict[str, Any]) -> str:
         """Decide where an inbound frame goes: 'turn' (active interactive turn), 'proactive'  (unsolicited delivery), or 'drop' (straggler of a cancelled/older turn).
@@ -363,6 +421,10 @@ class ReachyPlatformClient:
                     frame = json.loads(raw)
                 except Exception:
                     continue
+                # Without hello_ok, an inbound application frame is evidence of acceptance.
+                self._auth_rejected = False
+                self._auth_retry_at = 0.0
+                self._auth_backoff = 60.0
                 if frame.get("type") == "tool_call":
                     # gateway-requested body action — independent of turn routing
                     t = asyncio.create_task(self._run_tool_call(frame))
@@ -397,6 +459,7 @@ class ReachyPlatformClient:
             if not self._check_auth_rejection(e):
                 logger.info("[reachy-platform] reader ended: %s", e)
         finally:
+            self._check_close(getattr(ws, "close_code", None), getattr(ws, "close_reason", None))
             # unblock any waiting turn and drop the session so the supervisor/next turn
             # reconnects — but only OUR session (a stale reader must not clobber a newer ws).
             if self._turn_q is not None:
