@@ -43,8 +43,7 @@ async def test_agent_vision_uses_one_shot_frame_and_local_vision_processor() -> 
 
 @pytest.mark.asyncio
 async def test_agent_vision_blocks_person_identification_when_env_set(monkeypatch) -> None:
-    """Person-ID is ALLOWED by default (local model, personal robot — Operator); the legacy denylist
-    can be re-enabled via AGENT_VISION_BLOCK_PERSON_ID=1, which blocks before reading a frame."""
+    """Person-ID is ALLOWED by default (local model, personal robot — Operator); the legacy denylist  can be re-enabled via AGENT_VISION_BLOCK_PERSON_ID=1, which blocks before reading a frame."""
     monkeypatch.setenv("AGENT_VISION_BLOCK_PERSON_ID", "1")
     camera_worker = MagicMock()
     vision_processor = MagicMock()
@@ -72,7 +71,9 @@ async def test_agent_vision_blocks_person_identification_when_env_set(monkeypatc
 @pytest.mark.asyncio
 async def test_agent_vision_requires_camera_worker_and_local_vision_processor() -> None:
     """AGENT wrapper should fail closed instead of returning raw base64 images."""
-    deps = ToolDependencies(reachy_mini=MagicMock(), movement_manager=MagicMock(), camera_worker=None, vision_processor=None)
+    deps = ToolDependencies(
+        reachy_mini=MagicMock(), movement_manager=MagicMock(), camera_worker=None, vision_processor=None
+    )
 
     result = await AgentVision()(deps, question="What is visible?")
 

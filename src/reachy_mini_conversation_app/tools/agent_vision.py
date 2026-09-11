@@ -28,7 +28,9 @@ class AgentVision(Tool):
     """One-shot AGENT vision wrapper using the official camera/vision seams."""
 
     name = "agent_vision"
-    description = "Answer a safe one-shot question about the current camera frame without persisting or returning raw images."
+    description = (
+        "Answer a safe one-shot question about the current camera frame without persisting or returning raw images."
+    )
     parameters_schema = {
         "type": "object",
         "properties": {
@@ -92,8 +94,12 @@ class AgentVision(Tool):
 def _vision_policy(question: str) -> dict[str, Any]:
     # Person identification ALLOWED by default (local model, personal robot — Operator). Set
     # AGENT_VISION_BLOCK_PERSON_ID=1 to re-enable the legacy denylist.
-    if os.getenv("AGENT_VISION_BLOCK_PERSON_ID", "0").strip().lower() in ("1", "true", "yes", "on") \
-            and _PERSON_IDENTIFICATION_RE.search(question):
+    if os.getenv("AGENT_VISION_BLOCK_PERSON_ID", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ) and _PERSON_IDENTIFICATION_RE.search(question):
         return {"blocked": True, "reason": "person_identification"}
     return {"blocked": False, "reason": None}
 

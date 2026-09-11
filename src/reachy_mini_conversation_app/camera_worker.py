@@ -30,7 +30,8 @@ def cap_camera_framerate(reachy_mini: ReachyMini, max_fps: int) -> bool:
     before the appsink and re-cap its caps — frames are dropped before conversion/tracking, the
     daemon side stays untouched. Uses the same close->modify->open cycle as the SDK's own
     ``_apply_resolution``. Best-effort: returns False and leaves the native rate on any failure.
-    Run ONCE at app start (repeated media surgery is what crashes the producer)."""
+    Run ONCE at app start (repeated media surgery is what crashes the producer).
+    """
     max_fps = max(CAMERA_FPS_FLOOR, int(max_fps))
     try:
         from gi.repository import Gst
@@ -63,9 +64,7 @@ def cap_camera_framerate(reachy_mini: ReachyMini, max_fps: int) -> bool:
         width, height = cam.resolution
         appsink.set_property(
             "caps",
-            Gst.Caps.from_string(
-                f"video/x-raw,format=BGR,width={width},height={height},framerate={max_fps}/1"
-            ),
+            Gst.Caps.from_string(f"video/x-raw,format=BGR,width={width},height={height},framerate={max_fps}/1"),
         )
         videorate.link(appsink)
 

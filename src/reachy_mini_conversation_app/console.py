@@ -282,8 +282,10 @@ class LocalStream:
         (tmp + os.replace on the real instance file; the app-root .env symlink keeps pointing at
         the same path, so it stays intact).
         """
-        normalized_updates = {name: (value or "").strip().splitlines()[0].strip() if (value or "").strip() else ""
-                              for name, value in updates.items()}
+        normalized_updates = {
+            name: (value or "").strip().splitlines()[0].strip() if (value or "").strip() else ""
+            for name, value in updates.items()
+        }
         normalized_updates = {name: value for name, value in normalized_updates.items() if value}
         if not normalized_updates:
             return
@@ -445,10 +447,11 @@ class LocalStream:
         if get_backend_choice() == LOCAL_BACKEND and callable(handler_apply):
             try:
                 from reachy_mini_conversation_app.config import set_custom_profile
+
                 set_custom_profile(profile)  # persist the dashboard selection
             except Exception:
                 logger.warning("set_custom_profile failed for %r", profile, exc_info=True)
-            return await handler_apply(profile)
+            return str(await handler_apply(profile))
         try:
             from reachy_mini_conversation_app.config import set_custom_profile
             from reachy_mini_conversation_app.prompts import get_session_voice, get_session_instructions

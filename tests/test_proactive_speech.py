@@ -7,7 +7,6 @@ must be mutually exclusive with interactive turns via ``_turn_lock``.
 
 # ruff: noqa: D103
 from __future__ import annotations
-
 import time
 
 import numpy as np

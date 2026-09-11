@@ -569,8 +569,7 @@ async def dispatch_tool_call(tool_name: str, args_json: str, deps: ToolDependenc
 
 
 async def dispatch_tool_call_obj(tool_name: str, args: Dict[str, Any], deps: ToolDependencies) -> Dict[str, Any]:
-    """Dispatch a tool call whose args are already a dict (in-process callers:
-    idle actions, body surface, turn emotes) — no JSON round-trip."""
+    """Dispatch a tool call whose args are already a dict (in-process callers:  idle actions, body surface, turn emotes) — no JSON round-trip."""
     return await _dispatch_tool_call(tool_name, dict(args or {}), deps)
 
 

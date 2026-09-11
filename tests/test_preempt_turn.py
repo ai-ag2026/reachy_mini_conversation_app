@@ -1,10 +1,8 @@
 # ruff: noqa: D103
-"""Stage-2 preemptive turn-start: the speculative turn holds its audio behind a gate until the real
-endpoint confirms, and adopts only when the final transcript equals the partial it started on."""
+"""Stage-2 preemptive turn-start: the speculative turn holds its audio behind a gate until the real  endpoint confirms, and adopts only when the final transcript equals the partial it started on."""
+
 from __future__ import annotations
-
 import asyncio
-
 from unittest.mock import MagicMock
 
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
@@ -53,17 +51,17 @@ def test_speculative_holds_until_gate_then_speaks():
         adopted = {"v": False}
         task = asyncio.create_task(h._speculative_turn("frage", my_seq=1, gate=gate, adopted=adopted))
         await asyncio.sleep(0.05)
-        held = list(spoken)          # nothing spoken while gate closed
-        adopted["v"] = True          # adopt marker (set before the gate, like receive() does)
-        gate.set()                   # adopt -> release
-        h._turn_seq = 1              # this task owns seq 1
+        held = list(spoken)  # nothing spoken while gate closed
+        adopted["v"] = True  # adopt marker (set before the gate, like receive() does)
+        gate.set()  # adopt -> release
+        h._turn_seq = 1  # this task owns seq 1
         await asyncio.wait_for(task, timeout=2)
         return held, spoken, h
 
     held, spoken, h = asyncio.run(run())
-    assert held == []                                        # audio was held pre-confirm
+    assert held == []  # audio was held pre-confirm
     assert spoken == ["Ein schwarzes Loch.", "Es krümmt die Raumzeit."]  # released after gate
-    assert h._turn_active is False                           # turn cleanup ran (adopted)
+    assert h._turn_active is False  # turn cleanup ran (adopted)
 
 
 def test_speculative_discarded_before_gate_never_speaks():
@@ -78,7 +76,7 @@ def test_speculative_discarded_before_gate_never_speaks():
         h._speak_sentence = fake_speak
         gate = asyncio.Event()
         task = asyncio.create_task(h._speculative_turn("halbe frage", my_seq=1, gate=gate, adopted={"v": False}))
-        await asyncio.sleep(0.05)    # holding at the gate
+        await asyncio.sleep(0.05)  # holding at the gate
         task.cancel()
         try:
             await task
@@ -87,13 +85,14 @@ def test_speculative_discarded_before_gate_never_speaks():
         return spoken
 
     spoken = asyncio.run(run())
-    assert spoken == []              # a discarded speculation never speaks a wrong word
+    assert spoken == []  # a discarded speculation never speaks a wrong word
 
 
 def test_speculative_discarded_after_gate_open_runs_no_adopted_cleanup():
-    """Review 2026-07-02 round 2, P2: _discard_speculative cancels THEN opens the gate — the
-    cancelled task's finally used to see gate.is_set() and ran the ADOPTED cleanup (clearing
-    _turn_active mid fresh turn, dropping _pending_barge). The adopted marker fixes that."""
+    """Review 2026-07-02 round 2, P2: _discard_speculative cancels THEN opens the gate — the cancelled task's finally used to see gate.is_set() and ran the ADOPTED cleanup (clearing _turn_active mid fresh turn, dropping _pending_barge).
+
+    The adopted marker fixes that.
+    """
 
     async def run():
         h = _make_handler(["Falsche Antwort."])
@@ -120,5 +119,5 @@ def test_speculative_discarded_after_gate_open_runs_no_adopted_cleanup():
         return h
 
     h = asyncio.run(run())
-    assert h._turn_active is True                      # fresh turn NOT clobbered
-    assert h._pending_barge == "wichtiges kommando"    # pending command survives the discard
+    assert h._turn_active is True  # fresh turn NOT clobbered
+    assert h._pending_barge == "wichtiges kommando"  # pending command survives the discard

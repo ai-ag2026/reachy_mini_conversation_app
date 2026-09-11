@@ -8,9 +8,9 @@ set_target caller); anything outside the allowlist is rejected.
 """
 
 from __future__ import annotations
-
 import logging
 from typing import Any, Callable
+
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +21,10 @@ _ALLOWED_DIRECTIONS = ("left", "right", "up", "down", "front")
 async def run_body_action(
     deps: Any,
     action: str,
-    params: dict,
+    params: dict[str, Any],
     *,
     chirp: Callable[[str], None] | None = None,
-) -> dict:
+) -> dict[str, Any]:
     """Execute one gateway-requested body action; always returns a result dict."""
     action = (action or "").strip().lower()
     if action not in ALLOWED_ACTIONS:

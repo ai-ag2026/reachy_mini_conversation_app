@@ -7,15 +7,14 @@ and stops the instant the first real chunk arrives (never delays the answer).
 
 # ruff: noqa: D103
 from __future__ import annotations
-
 import asyncio
 
 import numpy as np
 import pytest
 
+from reachy_mini_conversation_app.agent_clients import _GAP_FILLERS, _STATIC_QUICKTAKES
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
 from reachy_mini_conversation_app.agent_voice_handler import AgentVoiceHandler, FakeAudioTtsClient
-from reachy_mini_conversation_app.agent_clients import _STATIC_QUICKTAKES, _GAP_FILLERS
 
 
 class _FakeMovementManager:
@@ -55,10 +54,10 @@ async def test_full_window_gap_fill_masks_long_hole(monkeypatch):
 
     out = [c async for c in h._stream_with_lead_in("frage", slow_ask_stream)]
 
-    assert out[-1] == "Die echte Antwort."          # real answer always last, never delayed away
-    assert len(out) >= 3                             # opener + >=1 filler + real
+    assert out[-1] == "Die echte Antwort."  # real answer always last, never delayed away
+    assert len(out) >= 3  # opener + >=1 filler + real
     fillers = out[:-1]
-    assert len(set(fillers)) == len(fillers)         # no repeated line
+    assert len(set(fillers)) == len(fillers)  # no repeated line
     assert all(f in _STATIC_QUICKTAKES or f in _GAP_FILLERS for f in fillers)  # content-free only
 
 

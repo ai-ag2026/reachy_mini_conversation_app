@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+
 gi = pytest.importorskip("gi")
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402
 
 from reachy_mini_conversation_app.camera_worker import CAMERA_FPS_FLOOR, cap_camera_framerate  # noqa: E402
+
 
 Gst.init([])
 
@@ -85,6 +87,7 @@ def _appsink_fps(cam) -> int:
 
 
 def test_cap_inserts_droponly_videorate_and_recaps_appsink():
+    """Verify cap inserts droponly videorate and recaps appsink."""
     cam = _FakeCam(native_fps=30)
     assert cap_camera_framerate(_FakeMini(cam), 15) is True
     assert "videorate" in _pipeline_element_names(cam.pipeline)
@@ -102,12 +105,15 @@ def test_cap_enforces_15fps_floor():
 
 
 def test_cap_noop_when_native_at_or_below_cap():
+    """Verify cap noop when native at or below cap."""
     cam = _FakeCam(native_fps=15)
     assert cap_camera_framerate(_FakeMini(cam), 15) is True
     assert "videorate" not in _pipeline_element_names(cam.pipeline)
 
 
 def test_cap_fails_soft_without_camera():
+    """Verify cap fails soft without camera."""
+
     class _NoCamMini:
         media = None
 
