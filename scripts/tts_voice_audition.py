@@ -3,7 +3,7 @@
 
 Defaults come from the same environment the app uses (AGENT_QWEN_TTS_BASE_URL, AGENT_QWEN_TTS_MODEL,
 AGENT_TTS_SPEED, and the bearer token named by AGENT_QWEN_TTS_API_KEY_ENV), read from the process
-environment and the repository's .env; the MLX Audio / Kokoro values below are the fallbacks.
+environment and the nearest .env upward from cwd (.env overrides the shell); the MLX Audio / Kokoro values below are the fallbacks.
 """
 
 from __future__ import annotations
@@ -28,12 +28,12 @@ DEFAULT_TEXT = (
 
 
 def _load_dotenv() -> None:
-    """Load the repo .env without overriding the real environment (python-dotenv is a core dep)."""
+    """Search upward from cwd and apply .env overrides, matching the app."""
     try:
-        from dotenv import load_dotenv
+        from dotenv import find_dotenv, load_dotenv
     except ImportError:
         return
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+    load_dotenv(find_dotenv(usecwd=True), override=True)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -93,6 +93,7 @@ def main() -> int:
     parser.add_argument("--voice", action="append", dest="voices", help="Test only this voice; repeatable")
     parser.add_argument("--output", type=Path, default=Path("tts-auditions"))
     args = parser.parse_args()
+    args.speed = min(2.0, max(0.5, args.speed))
 
     voices = args.voices or _get_voices(args.base_url, args.model)
     if not voices:

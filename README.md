@@ -146,7 +146,7 @@ Copy `.env.example` to `.env` when you want to switch backends, provide API keys
 | `AGENT_TTS_SPEED` / `AGENT_OUTPUT_GAIN` | Synthesis pace (sent to the TTS server, clamped to `0.5`–`2.0`) and post-synthesis loudness. Defaults to `1.0` and `0.9`; `0.95` speed often sounds more natural. |
 | `AGENT_PIPELINE_MONITOR` / `AGENT_PIPELINE_MONITOR_PORT` | Loopback-only live STT/LLM/TTS/tool monitor and its port. Defaults to `1` (on) and `8766`. |
 | `AGENT_PIPELINE_MONITOR_LOG_CONTENT` | Defaults to `0`: monitor log lines record stage, text length and metadata only. Set `1` to also log the transcript/assistant text. |
-| `AGENT_PLATFORM_API_KEY` / `AGENT_PLATFORM_API_KEY_FILE` | Shared secret sent in the platform `hello` frame (the key, or an absolute path to a file containing it; the nonempty variable wins). File contents are stripped and must match the gateway's `REACHY_WS_API_KEY_FILE` (or `REACHY_WS_API_KEY`). A 1008 authentication rejection stops reconnects until the app is restarted. |
+| `AGENT_PLATFORM_API_KEY` / `AGENT_PLATFORM_API_KEY_FILE` | Shared secret sent in the platform `hello` frame (the key, or an absolute path to a file containing it; the nonempty variable wins). File contents are stripped and must match the gateway's `REACHY_WS_API_KEY_FILE` (or `REACHY_WS_API_KEY`). Missing credentials and 1008 rejections retry after 60 seconds, doubling to a 900-second maximum; the key is reloaded before each attempt. |
 | `REACHY_MINI_HOST` | Reachy daemon host/IP for network connection (same as `--robot-host`). Unset = SDK auto-detection. |
 | `AGENT_IDLE_BREATHING` / `AGENT_IDLE_ACTIONS` | Idle breathing and random idle movement. Both default to `1` (on); set `0` for quiet microphone operation. |
 | `AGENT_SPEECH_WOBBLE` / `AGENT_SPEECH_SWAY` | Speech-driven head wobble and antenna sway. Both default to `1` (on); set `0` to disable. |
@@ -183,8 +183,8 @@ synthesis timings:
 ```
 
 The utility reads `AGENT_QWEN_TTS_BASE_URL`, `AGENT_QWEN_TTS_MODEL` and `AGENT_TTS_SPEED` (from the
-environment or `.env`; falling back to a local MLX Audio Kokoro server) and writes one WAV per voice plus
-`results.json`. Use `--voice NAME` to benchmark a shortlist.
+environment or the nearest `.env` found upward from cwd, with `.env` overriding the shell; falling back to a local MLX Audio Kokoro server) and writes one WAV per voice plus
+`results.json`. Use `--voice NAME` to benchmark a shortlist. Speed, including `--speed`, is clamped to `0.5`–`2.0`.
 
 Minimal `.env` to get started (see `.env.example` for the full list):
 
@@ -500,5 +500,14 @@ The motion switches listed above also default to `1`.
 
 Deploy this client together with the hermes-reachy authentication adapter update. Configure
 `AGENT_PLATFORM_API_KEY_FILE` with an absolute path; its stripped contents must equal the
-secret in the gateway's `REACHY_WS_API_KEY_FILE`. After a policy close (1008), fix the
-credentials and restart the app to reconnect.
+secret in the gateway's `REACHY_WS_API_KEY_FILE`. Missing, empty, unreadable, or rejected keys
+are rechecked after 60 seconds, with retries doubling to a 900-second maximum. Replacing the
+key file allows recovery without restarting. Inline keys still take precedence. A superseded
+connection (4001, or 1000 with a superseded reason) stops reconnecting: check for a duplicate
+app using the same robot ID before restarting. Ordinary gateway shutdowns still reconnect.
+Use `wss://` for a non-loopback gateway; plain `ws://` sends the key unencrypted and produces a warning.
+
+The app's local prompts and STT default to English. The pinned runtime still has German vision
+and semantic-gate prompts; updating that pin awaits the decision about the runtime repository home.
+An explicit adapter `hello_ok` acknowledgement is also deferred; currently an inbound application
+frame resets the authentication retry streak.

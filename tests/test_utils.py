@@ -97,3 +97,14 @@ def test_initialize_camera_and_vision_uses_mediapipe_head_tracker_in_process() -
         initialize_camera_and_vision(args, current_robot)
 
     mock_camera_worker.assert_called_once_with(current_robot, mediapipe_head_tracker)
+
+
+@pytest.mark.parametrize("cli_host", [None, "cli-host"])
+def test_robot_host_resolves_after_dotenv(monkeypatch, cli_host):
+    """CLI parsing defers environment defaults while preserving an explicit host flag."""
+    from reachy_mini_conversation_app.utils import parse_args
+
+    monkeypatch.setenv("REACHY_MINI_HOST", "shell-host")
+    monkeypatch.setattr("sys.argv", ["app"] + (["--robot-host", cli_host] if cli_host else []))
+    args, _ = parse_args()
+    assert args.robot_host == cli_host

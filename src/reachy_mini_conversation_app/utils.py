@@ -53,7 +53,7 @@ def parse_args() -> tuple[argparse.Namespace, list]:  # type: ignore
     parser.add_argument(
         "--robot-host",
         type=str,
-        default=os.getenv("REACHY_MINI_HOST", "").strip() or None,
+        default=None,
         help="Reachy daemon hostname or IP address (env: REACHY_MINI_HOST).",
     )
     subparsers = parser.add_subparsers(dest="command")
