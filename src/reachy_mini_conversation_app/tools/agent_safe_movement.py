@@ -1,6 +1,6 @@
 from __future__ import annotations
-import inspect
 import math
+import inspect
 import logging
 from typing import Any, Dict
 
@@ -130,8 +130,11 @@ def _queue_safe_head_motion(deps: ToolDependencies, *, direction: str) -> Dict[s
     # SSoT parity (body/safe_movement, review 2026-07-02 round 2, P3): a daemon glitch can hand
     # back a non-finite pose — queued unchecked it drove NaN through the interpolation into
     # set_target (IK ValueError spam for the whole move duration).
-    if not np.all(np.isfinite(current_head_pose)) or not math.isfinite(start_body_yaw) \
-            or not all(math.isfinite(a) for a in start_antennas):
+    if (
+        not np.all(np.isfinite(current_head_pose))
+        or not math.isfinite(start_body_yaw)
+        or not all(math.isfinite(a) for a in start_antennas)
+    ):
         logger.warning("agent_safe_movement: non-finite current pose -> abort queue")
         return {"status": "error", "error": "non-finite current pose", "side_effects": []}
     duration = deps.motion_duration_s

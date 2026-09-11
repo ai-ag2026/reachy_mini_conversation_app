@@ -1,11 +1,12 @@
-import re
 import os
+import re
 import random
 import asyncio
 import logging
 import unicodedata
 from typing import Any, Dict
 
+from reachy_mini.motion.recorded_move import RecordedMoves
 from reachy_mini_conversation_app.tools.core_tools import Tool, ToolDependencies
 
 
@@ -16,11 +17,12 @@ logger = logging.getLogger(__name__)
 # restart with no retry (review 2026-07-02 round 2, P3).
 from reachy_mini_conversation_app.dance_emotion_moves import EmotionQueueMove  # noqa: E402
 
-RECORDED_MOVES = None
+
+RECORDED_MOVES: RecordedMoves | None = None
 EMOTION_AVAILABLE = True  # optimistic until a load attempt fails; refreshed per attempt
 
 
-def _get_recorded_moves():
+def _get_recorded_moves() -> RecordedMoves | None:
     """Load (and cache) the HF emotion library; retried on every call until it succeeds."""
     global RECORDED_MOVES, EMOTION_AVAILABLE
     if RECORDED_MOVES is not None:

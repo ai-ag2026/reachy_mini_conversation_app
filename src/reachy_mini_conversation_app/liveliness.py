@@ -14,16 +14,16 @@ sound library) that the AGENT voice handler never reached — this module wires 
 """
 
 from __future__ import annotations
-
-import asyncio
 import io
-import logging
 import os
 import time
 import wave
+import asyncio
+import logging
 from typing import Any, Callable
 
 import numpy as np
+
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-def wav_file_to_pcm(path: str) -> tuple[int, np.ndarray] | None:
+def wav_file_to_pcm(path: str) -> tuple[int, np.ndarray[Any, Any]] | None:
     """Load a wav file as (sample_rate, int16 mono PCM); None on any failure."""
     try:
         with wave.open(path, "rb") as w:
@@ -83,12 +83,13 @@ class IdleActionRunner:
         cooldown_s: float | None = None,
         check_interval_s: float = 5.0,
     ) -> None:
+        """Initialize the configured state."""
         self.deps = deps
         self.is_busy = is_busy
         self.idle_after_s = idle_after_s if idle_after_s is not None else _env_float("AGENT_IDLE_AFTER_S", 120.0)
         self.cooldown_s = cooldown_s if cooldown_s is not None else _env_float("AGENT_IDLE_COOLDOWN_S", 90.0)
         self.check_interval_s = check_interval_s
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
         self._last_action = 0.0
         self._last_busy = time.monotonic()
 
@@ -97,6 +98,7 @@ class IdleActionRunner:
         self._last_busy = time.monotonic()
 
     def start(self) -> None:
+        """Start the background worker."""
         if not _env_on("AGENT_IDLE_ACTIONS", "1"):
             logger.info("idle actions disabled (AGENT_IDLE_ACTIONS=0)")
             return
@@ -104,6 +106,7 @@ class IdleActionRunner:
             self._task = asyncio.create_task(self._loop())
 
     def stop(self) -> None:
+        """Stop the background worker."""
         if self._task is not None and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -112,9 +115,7 @@ class IdleActionRunner:
         from reachy_mini_conversation_app.idle_policy import choose_idle_tool_call
         from reachy_mini_conversation_app.tools.core_tools import dispatch_tool_call_obj
 
-        logger.info(
-            "idle-action runner up (after %.0fs idle, cooldown %.0fs)", self.idle_after_s, self.cooldown_s
-        )
+        logger.info("idle-action runner up (after %.0fs idle, cooldown %.0fs)", self.idle_after_s, self.cooldown_s)
         while True:
             try:
                 await asyncio.sleep(self.check_interval_s)
@@ -165,11 +166,11 @@ def chirp_wav_bytes(name: str, sample_rate: int = 24000, gain: float = 0.9) -> b
 
 
 def ensure_chirps_uploaded(base_url: str = DAEMON_BASE_URL) -> int:
-    """Upload all astromech chirps missing from the daemon sound library (idempotent, sync —
-    run off-thread). Returns the number uploaded. The library lives in /tmp on the robot, so
-    every app start re-checks."""
-    import httpx
+    """Upload all astromech chirps missing from the daemon sound library (idempotent, sync — run off-thread).
 
+    Returns the number uploaded. The library lives in /tmp on the robot, so every app start re-checks.
+    """
+    import httpx
     from reachy_agent.voice.astromech import CHIRPS
 
     uploaded = 0
@@ -198,9 +199,10 @@ def ensure_chirps_uploaded(base_url: str = DAEMON_BASE_URL) -> int:
 
 
 def ensure_daemon_sound(path: str, base_url: str = DAEMON_BASE_URL) -> str | None:
-    """Make a local sound file (any GStreamer-decodable format, e.g. the emotion library's
-    .ogg) available in the daemon sound library; returns the library file name or None.
-    Idempotent + sync — run off-thread. Library lives in /tmp (wiped on reboot)."""
+    """Make a local sound file (any GStreamer-decodable format, e.g. the emotion library's  .ogg) available in the daemon sound library; returns the library file name or None.
+
+    Idempotent + sync — run off-thread. Library lives in /tmp (wiped on reboot).
+    """
     import httpx
 
     fname = os.path.basename(path)
@@ -226,7 +228,9 @@ def ensure_daemon_sound(path: str, base_url: str = DAEMON_BASE_URL) -> str | Non
 
 def play_daemon_sound(file_name: str, base_url: str = DAEMON_BASE_URL) -> bool:
     """Fire-and-forget daemon-side sound playback (drives the head wobbler for free).
-    Sync + fast (local REST); returns False on failure so callers fall back."""
+
+    Sync + fast (local REST); returns False on failure so callers fall back.
+    """
     import httpx
 
     try:
@@ -241,9 +245,8 @@ def play_daemon_sound(file_name: str, base_url: str = DAEMON_BASE_URL) -> bool:
 # ── Stufe 2 (gap-map): speech-sway antennas, DOA orienting, IMU reactivity ─────────────────────
 
 
-def read_local_doa(base_url: str = DAEMON_BASE_URL) -> dict | None:
-    """Read the mic-array Direction-of-Arrival from the local daemon (ported from
-    conversation-app-agent-bridge/look_toward_sound)."""
+def read_local_doa(base_url: str = DAEMON_BASE_URL) -> dict[str, Any] | None:
+    """Read the mic-array Direction-of-Arrival from the local daemon (ported from  conversation-app-agent-bridge/look_toward_sound)."""
     import httpx
 
     try:
@@ -258,7 +261,9 @@ def read_local_doa(base_url: str = DAEMON_BASE_URL) -> dict | None:
 
 def map_doa_angle_to_direction(angle_radians: float, *, front_deadzone_radians: float = 0.35) -> str:
     """Map ReSpeaker DoA radians to a coarse head direction (0=left, pi/2=front/back, pi=right).
-    Ported from conversation-app-agent-bridge/audio_orientation.py."""
+
+    Ported from conversation-app-agent-bridge/audio_orientation.py.
+    """
     import math
 
     angle = max(0.0, min(math.pi, float(angle_radians)))
@@ -271,9 +276,10 @@ def map_doa_angle_to_direction(angle_radians: float, *, front_deadzone_radians: 
 
 
 async def orient_to_speaker(deps: Any) -> str | None:
-    """One-shot: read DoA and, if the sound clearly comes from the side, queue a head turn
-    toward it (through the app's move_head tool = MovementManager seam). Returns the direction
-    moved, or None."""
+    """One-shot: read DoA and, if the sound clearly comes from the side, queue a head turn toward it (through the app's move_head tool = MovementManager seam).
+
+    Returns the direction moved, or None.
+    """
     doa = await asyncio.to_thread(read_local_doa)
     if not doa or "angle" not in doa:
         return None
@@ -307,16 +313,18 @@ class SpeechSway:
     """
 
     def __init__(self, movement_manager: Any, *, hop_s: float = 0.04) -> None:
+        """Initialize the configured state."""
         self.mm = movement_manager
         self.hop_s = hop_s
         self.max_rad = float(np.deg2rad(_env_float("AGENT_SWAY_MAX_DEG", 14.0)))
         self.gain = _env_float("AGENT_SWAY_GAIN", 5.0)  # rms (0..1) -> amplitude scale
         self._points: list[tuple[float, float]] = []  # (play_at_monotonic, amplitude 0..1)
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
         self._active = False  # last applied state (avoid redundant zero writes)
         self._phase = 0.0
 
-    def feed(self, sr: int, pcm: np.ndarray, play_at: float) -> None:
+    def feed(self, sr: int, pcm: np.ndarray[Any, Any], play_at: float) -> None:
+        """Handle feed."""
         if self._task is None:
             return
         try:
@@ -341,6 +349,7 @@ class SpeechSway:
         self._apply(0.0, force=True)
 
     def start(self) -> None:
+        """Start the background worker."""
         if not _env_on("AGENT_SPEECH_SWAY", "1"):
             logger.info("speech sway disabled (AGENT_SPEECH_SWAY=0)")
             return
@@ -348,6 +357,7 @@ class SpeechSway:
             self._task = asyncio.create_task(self._loop())
 
     def stop(self) -> None:
+        """Stop the background worker."""
         if self._task is not None and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -401,11 +411,12 @@ class ThinkingAntennaCue:
     """Very subtle antenna motion while the backend is working before speech begins."""
 
     def __init__(self, movement_manager: Any) -> None:
+        """Initialize the configured state."""
         self.mm = movement_manager
         self.delay_s = _env_float("AGENT_THINKING_CUE_DELAY_S", 0.8)
         self.max_rad = float(np.deg2rad(_env_float("AGENT_THINKING_CUE_MAX_DEG", 2.0)))
         self.frequency_hz = _env_float("AGENT_THINKING_CUE_HZ", 0.18)
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
 
     def start(self) -> None:
         """Begin a delayed cue, replacing any cue left by a previous turn."""
@@ -450,14 +461,16 @@ class ImuWatcher:
 
     Polls the Wireless IMU (50 Hz daemon cache, cheap read) and fires ``on_event`` when the
     acceleration magnitude deviates from its running baseline by more than the threshold.
-    Silent no-op when no IMU is available (Lite/sim)."""
+    Silent no-op when no IMU is available (Lite/sim).
+    """
 
     def __init__(self, robot: Any, on_event: Callable[[str], None]) -> None:
+        """Initialize the configured state."""
         self.robot = robot
         self.on_event = on_event
         self.threshold = _env_float("AGENT_IMU_THRESHOLD", 2.5)  # m/s^2 deviation
         self.cooldown_s = _env_float("AGENT_IMU_COOLDOWN_S", 20.0)
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
         self._last_fire = 0.0
         self._baseline: float | None = None
 
@@ -470,6 +483,7 @@ class ImuWatcher:
             if v is None:
                 continue
             try:
+
                 def _axis(obj: Any, name: str, idx: int) -> float:
                     val = getattr(obj, name, None)  # NOT `or obj[idx]`: 0.0 is a valid reading
                     if val is None:
@@ -483,6 +497,7 @@ class ImuWatcher:
         return None
 
     def start(self) -> None:
+        """Start the background worker."""
         if not _env_on("AGENT_IMU_REACT", "1"):
             logger.info("IMU reactivity disabled (AGENT_IMU_REACT=0)")
             return
@@ -490,6 +505,7 @@ class ImuWatcher:
             self._task = asyncio.create_task(self._loop())
 
     def stop(self) -> None:
+        """Stop the background worker."""
         if self._task is not None and not self._task.done():
             self._task.cancel()
         self._task = None

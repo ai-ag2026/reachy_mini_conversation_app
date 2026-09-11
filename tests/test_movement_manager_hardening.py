@@ -7,10 +7,12 @@
 3. The external-offsets seam is ADDITIVE with face tracking and actually reaches the
    composed pose (the old pending seam was clobbered every tick by _update_face_tracking).
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pytest
+
 
 pytest.importorskip("reachy_mini")
 
@@ -100,8 +102,10 @@ def test_quiet_idle_uses_stable_antenna_rest_offset(monkeypatch):
 
 
 def test_breathing_interpolates_body_yaw_to_zero():
-    """Review 2026-07-02 round 2, P2: breathing hard-returned body_yaw=0.0 from the first tick —
-    a body SNAP after any emotion ending with body_yaw != 0. Phase 1 now blends it to 0."""
+    """Review 2026-07-02 round 2, P2: breathing hard-returned body_yaw=0.0 from the first tick — a body SNAP after any emotion ending with body_yaw != 0.
+
+    Phase 1 now blends it to 0.
+    """
     move = BreathingMove(
         interpolation_start_pose=np.eye(4, dtype=np.float32),
         interpolation_start_antennas=(0.0, 0.0),
@@ -117,10 +121,12 @@ def test_breathing_interpolates_body_yaw_to_zero():
 
 
 def test_dequeued_goto_is_rebased_onto_current_pose():
-    """Review 2026-07-02 round 2, P2: a goto queued behind a running move froze its start pose at
-    ENQUEUE time -> one-tick jump back on dequeue. The manager now re-bases it at dequeue."""
-    from reachy_mini_conversation_app.dance_emotion_moves import GotoQueueMove
+    """Review 2026-07-02 round 2, P2: a goto queued behind a running move froze its start pose at ENQUEUE time -> one-tick jump back on dequeue.
+
+    The manager now re-bases it at dequeue.
+    """
     from reachy_mini_conversation_app.moves import clone_full_body_pose  # noqa: F401 (import check)
+    from reachy_mini_conversation_app.dance_emotion_moves import GotoQueueMove
 
     mgr = MovementManager(_FakeRobot())
     stale_start = np.eye(4, dtype=np.float32)
@@ -151,9 +157,10 @@ def test_dequeued_goto_is_rebased_onto_current_pose():
 
 
 def test_breathing_starts_from_last_primary_pose_not_measured():
-    """Review 2026-07-02 round 2, P3: breathing started from the MEASURED pose (which contains
-    the face-tracking offset) — the composition added the offset again = one-tick lurch toward
-    2x offset. It must start from the last COMMANDED primary pose."""
+    """Review 2026-07-02 round 2, P3: breathing started from the MEASURED pose (which contains the face-tracking offset) — the composition added the offset again = one-tick lurch toward 2x offset.
+
+    It must start from the last COMMANDED primary pose.
+    """
 
     class _OffsetRobot(_FakeRobot):
         def get_current_joint_positions(self):

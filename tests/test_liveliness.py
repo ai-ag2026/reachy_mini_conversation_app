@@ -1,10 +1,10 @@
 # ruff: noqa: D103
 """Gap-map Stufe 1 (2026-07-02): idle actions, listening sync, emotion sounds, chirp library."""
-from __future__ import annotations
 
-import asyncio
+from __future__ import annotations
 import io
 import wave
+import asyncio
 
 import numpy as np
 import pytest
@@ -40,8 +40,7 @@ def test_wav_file_to_pcm_roundtrip(tmp_path):
 
 @pytest.mark.asyncio
 async def test_idle_runner_fires_only_when_idle(monkeypatch):
-    """Busy handler / recent activity must suppress actions; a quiet stretch fires exactly one
-    (cooldown suppresses the rest)."""
+    """Busy handler / recent activity must suppress actions; a quiet stretch fires exactly one  (cooldown suppresses the rest)."""
     import reachy_mini_conversation_app.liveliness as lv
 
     dispatched = []
@@ -50,9 +49,7 @@ async def test_idle_runner_fires_only_when_idle(monkeypatch):
         dispatched.append(name)
         return {"status": "queued"}
 
-    monkeypatch.setattr(
-        "reachy_mini_conversation_app.tools.core_tools.dispatch_tool_call_obj", fake_dispatch
-    )
+    monkeypatch.setattr("reachy_mini_conversation_app.tools.core_tools.dispatch_tool_call_obj", fake_dispatch)
     monkeypatch.setattr(
         "reachy_mini_conversation_app.idle_policy.choose_idle_tool_call",
         lambda names, **k: ("play_emotion", {}),
@@ -96,18 +93,27 @@ def test_goto_cartoon_easing_overshoots():
     target = np.eye(4, dtype=np.float32)
     target[0, 3] = 0.02
     goto = GotoQueueMove(
-        target_head_pose=target, start_head_pose=start,
-        target_antennas=(0.0, 0.0), start_antennas=(0.0, 0.0),
-        target_body_yaw=0.0, start_body_yaw=0.0,
-        duration=1.0, interpolation="cartoon",
+        target_head_pose=target,
+        start_head_pose=start,
+        target_antennas=(0.0, 0.0),
+        start_antennas=(0.0, 0.0),
+        target_body_yaw=0.0,
+        start_body_yaw=0.0,
+        duration=1.0,
+        interpolation="cartoon",
     )
     xs = [goto.evaluate(t)[0][0, 3] for t in np.linspace(0.05, 0.98, 30)]
     assert max(xs) > 0.02 + 1e-4  # cartoon overshoots past the target, then settles
     # linear default stays monotonic (behavior-neutral)
     goto_lin = GotoQueueMove(
-        target_head_pose=target, start_head_pose=start,
-        target_antennas=(0.0, 0.0), start_antennas=(0.0, 0.0),
-        target_body_yaw=0.0, start_body_yaw=0.0, duration=1.0, interpolation="linear",
+        target_head_pose=target,
+        start_head_pose=start,
+        target_antennas=(0.0, 0.0),
+        start_antennas=(0.0, 0.0),
+        target_body_yaw=0.0,
+        start_body_yaw=0.0,
+        duration=1.0,
+        interpolation="linear",
     )
     xs_lin = [goto_lin.evaluate(t)[0][0, 3] for t in np.linspace(0.05, 0.98, 30)]
     assert max(xs_lin) <= 0.02 + 1e-9
@@ -164,6 +170,7 @@ async def test_play_emotion_routes_bundled_sound(monkeypatch, tmp_path):
 
 def test_doa_mapping():
     import math
+
     from reachy_mini_conversation_app.liveliness import map_doa_angle_to_direction
 
     assert map_doa_angle_to_direction(0.1) == "left"
@@ -249,14 +256,13 @@ def test_imu_magnitude_extraction():
 
 @pytest.mark.asyncio
 async def test_play_wav_path_non_wav_falls_back_to_daemon(monkeypatch):
-    """A non-WAV emotion sound (e.g. .ogg) must route through the daemon sound library instead
-    of being dropped when wav_file_to_pcm can't read it."""
+    """A non-WAV emotion sound (e.g. .ogg) must route through the daemon sound library instead  of being dropped when wav_file_to_pcm can't read it."""
+    from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
     from reachy_mini_conversation_app.agent_voice_handler import (
         AgentVoiceHandler,
         FakeAudioTtsClient,
         FakeTextAgentClient,
     )
-    from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
 
     handler = AgentVoiceHandler(
         ToolDependencies(reachy_mini=object(), movement_manager=None),
@@ -286,10 +292,10 @@ async def test_play_wav_path_non_wav_falls_back_to_daemon(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_idle_runner_reaches_real_dispatcher(monkeypatch):
-    """Regression: IdleActionRunner must call the dispatcher with the (name, args, deps) shape
-    that the real core_tools dispatcher expects — a stub with the wrong argument order can stay
-    green while every idle action dies with a TypeError at runtime. This one routes a sentinel
-    tool through the REAL core_tools dispatcher."""
+    """Regression: IdleActionRunner must call the dispatcher with the (name, args, deps) shape that the real core_tools dispatcher expects — a stub with the wrong argument order can stay green while every idle action dies with a TypeError at runtime.
+
+    This one routes a sentinel tool through the REAL core_tools dispatcher.
+    """
     import reachy_mini_conversation_app.tools.core_tools as core_tools
 
     core_tools.initialize_tools()
@@ -310,9 +316,7 @@ async def test_idle_runner_reaches_real_dispatcher(monkeypatch):
         movement_manager = None
 
     deps = _Deps()
-    runner = IdleActionRunner(
-        deps, is_busy=lambda: False, idle_after_s=0.01, cooldown_s=10.0, check_interval_s=0.02
-    )
+    runner = IdleActionRunner(deps, is_busy=lambda: False, idle_after_s=0.01, cooldown_s=10.0, check_interval_s=0.02)
     runner.start()
     await asyncio.sleep(0.15)
     runner.stop()

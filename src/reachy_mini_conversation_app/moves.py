@@ -78,6 +78,7 @@ class BreathingMove(Move):  # type: ignore
             interpolation_start_pose: 4x4 matrix of current head pose to interpolate from
             interpolation_start_antennas: Current antenna positions to interpolate from
             interpolation_duration: Duration of interpolation to neutral (seconds)
+            interpolation_start_body_yaw: Current body yaw to interpolate from (radians)
 
         """
         self.interpolation_start_pose = interpolation_start_pose
@@ -112,7 +113,9 @@ class BreathingMove(Move):  # type: ignore
             # the worker tick (review 2026-07-02 round 2, P1-10 trigger).
             self._eval_errors = getattr(self, "_eval_errors", 0) + 1
             if self._eval_errors <= 3:
-                logger.warning("BreathingMove.evaluate failed (#%d) — neutral fallback", self._eval_errors, exc_info=True)
+                logger.warning(
+                    "BreathingMove.evaluate failed (#%d) — neutral fallback", self._eval_errors, exc_info=True
+                )
             return (self.neutral_head_pose.copy(), np.asarray(self.neutral_antennas, dtype=np.float64).copy(), 0.0)
 
     def _evaluate(self, t: float) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None]:
@@ -421,7 +424,8 @@ class MovementManager:
         Applied on the next tick and SUMMED with the camera's face-tracking offsets — head as a
         world-frame offset (x, y, z, roll, pitch, yaw; meters/radians), antennas in radians.
         Feed zeros to release. Marking activity as a side effect suppresses idle breathing while
-        a producer is actively driving (same rule as every other movement source)."""
+        a producer is actively driving (same rule as every other movement source).
+        """
         with self._face_offsets_lock:
             self._pending_face_offsets = tuple(float(v) for v in offsets)  # type: ignore[assignment]
             self._pending_external_antennas = (float(antennas[0]), float(antennas[1]))
@@ -532,7 +536,10 @@ class MovementManager:
     def _manage_breathing(self, current_time: float) -> None:
         """Manage automatic breathing when idle."""
         breathing_enabled = os.getenv("AGENT_IDLE_BREATHING", "1").strip().lower() not in {
-            "0", "false", "no", "off",
+            "0",
+            "false",
+            "no",
+            "off",
         }
         if not breathing_enabled:
             if isinstance(self.state.current_move, BreathingMove):

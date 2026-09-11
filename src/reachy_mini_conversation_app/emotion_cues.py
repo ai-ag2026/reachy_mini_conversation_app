@@ -8,8 +8,8 @@ emotes itself) is the Stufe-3 body-tool surface; this is the local reflex layer.
 """
 
 from __future__ import annotations
-
 import re
+
 
 # Ordered: first match wins. Patterns are matched case-insensitively against
 # "user_text ||| answer_text".

@@ -26,7 +26,9 @@ class DanceQueueMove(Move):  # type: ignore
         """Initialize a DanceQueueMove."""
         self.dance_move = DanceMove(move_name)
         self.move_name = move_name
-        self._last_pose = None  # last valid evaluate() result (error fallback, P3)
+        self._last_pose: tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None] | None = (
+            None  # last valid evaluate() result (error fallback, P3)
+        )
 
     @property
     def duration(self) -> float:
@@ -66,7 +68,9 @@ class EmotionQueueMove(Move):  # type: ignore
         """Initialize an EmotionQueueMove."""
         self.emotion_move = recorded_moves.get(emotion_name)
         self.emotion_name = emotion_name
-        self._last_pose = None  # last valid evaluate() result (error fallback, P3)
+        self._last_pose: tuple[NDArray[np.float64] | None, NDArray[np.float64] | None, float | None] | None = (
+            None  # last valid evaluate() result (error fallback, P3)
+        )
 
     @property
     def duration(self) -> float:
@@ -115,7 +119,7 @@ class GotoQueueMove(Move):  # type: ignore
         self._duration = duration
         import os
 
-        self.interpolation = (interpolation or os.getenv("AGENT_GOTO_STYLE", "linear")).strip().lower()
+        self.interpolation = (interpolation or os.getenv("AGENT_GOTO_STYLE") or "linear").strip().lower()
         self.target_head_pose = target_head_pose
         self.start_head_pose = start_head_pose
         self.target_antennas = target_antennas
@@ -128,11 +132,11 @@ class GotoQueueMove(Move):  # type: ignore
         """Duration property required by official Move interface."""
         return self._duration
 
-    def rebase_start_pose(self, primary_pose) -> None:
-        """Called by the MovementManager at DEQUEUE: replace the enqueue-time start with the
-        pose the head actually has now, so evaluate(0) starts where the head IS (no one-tick
-        jump back when this goto waited behind a running move; review 2026-07-02 round 2, P2).
-        The target stays as computed — it was derived from a real bounded pose."""
+    def rebase_start_pose(self, primary_pose: tuple[NDArray[np.float64], tuple[float, float], float]) -> None:
+        """Rebase the start to the current pose when the movement is dequeued.
+
+        The target stays as computed — it was derived from a real bounded pose.
+        """
         head, antennas, body_yaw = primary_pose
         self.start_head_pose = np.asarray(head, dtype=np.float32)
         self.start_antennas = (float(antennas[0]), float(antennas[1]))
