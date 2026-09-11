@@ -69,3 +69,63 @@ def test_get_pipeline_monitor_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENT_PIPELINE_MONITOR", "0")
     monkeypatch.setattr(pipeline_monitor, "_monitor", None)
     assert pipeline_monitor.get_pipeline_monitor() is None
+
+
+@pytest.mark.parametrize("path", ["/", "/events"])
+@pytest.mark.parametrize("host", ["attacker.example", "127.0.0.1.attacker.example", "localhost:1", ""])
+def test_monitor_rejects_untrusted_host(path, host):
+    """Reject rebinding requests before returning either HTML or transcript events."""
+    import http.client
+
+    monitor = PipelineMonitor(port=0)
+    monitor.emit("stt", "private transcript")
+    monitor.start()
+    connection = http.client.HTTPConnection("127.0.0.1", monitor.port, timeout=3)
+    try:
+        connection.request("GET", path, headers={"Host": host})
+        response = connection.getresponse()
+        assert response.status == 403
+        assert b"private transcript" not in response.read()
+    finally:
+        connection.close()
+        monitor.stop()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+@pytest.mark.parametrize("with_port", [False, True])
+def test_monitor_accepts_loopback_host(host, with_port):
+    """Allow only loopback hostnames and the actual configured port."""
+    import http.client
+
+    monitor = PipelineMonitor(port=0)
+    monitor.start()
+    connection = http.client.HTTPConnection("127.0.0.1", monitor.port, timeout=3)
+    try:
+        connection.request("GET", "/", headers={"Host": host + (f":{monitor.port}" if with_port else "")})
+        response = connection.getresponse()
+        assert response.status == 200
+        response.read()
+    finally:
+        connection.close()
+        monitor.stop()
+
+
+def test_monitor_serves_ipv6_loopback():
+    """An explicit IPv6 bind serves the dashboard and produces a bracketed URL."""
+    import socket
+    import http.client
+
+    if not socket.has_ipv6:
+        pytest.skip("IPv6 is unavailable on this host")
+    monitor = PipelineMonitor(host="::1", port=0)
+    monitor.start()
+    connection = http.client.HTTPConnection("::1", monitor.port, timeout=3)
+    try:
+        assert monitor.url == f"http://[::1]:{monitor.port}"
+        connection.request("GET", "/")
+        response = connection.getresponse()
+        assert response.status == 200
+        response.read()
+    finally:
+        connection.close()
+        monitor.stop()

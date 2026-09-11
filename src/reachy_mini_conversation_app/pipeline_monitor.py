@@ -11,6 +11,7 @@ import os
 import json
 import time
 import queue
+import socket
 import logging
 import threading
 from typing import Any
@@ -86,7 +87,8 @@ class PipelineMonitor:
     @property
     def url(self) -> str:
         """Return the local dashboard URL."""
-        return f"http://{self.host}:{self.port}"
+        host = "[::1]" if self.host == "::1" else self.host
+        return f"http://{host}:{self.port}"
 
     def start(self) -> None:
         """Start the dashboard server once in a daemon thread."""
@@ -96,6 +98,15 @@ class PipelineMonitor:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
+                allowed = {
+                    host + suffix
+                    for host in ("127.0.0.1", "localhost", "[::1]")
+                    for suffix in ("", f":{monitor.port}")
+                }
+                hosts = self.headers.get_all("Host", [])
+                if len(hosts) != 1 or hosts[0].lower() not in allowed:
+                    self.send_error(403, "Loopback Host required")
+                    return
                 if self.path == "/":
                     body = _PAGE.encode("utf-8")
                     self.send_response(200)
@@ -141,7 +152,11 @@ class PipelineMonitor:
             def log_message(self, _format: str, *_args: Any) -> None:
                 return
 
-        self._server = ThreadingHTTPServer((self.host, self.port), Handler)
+        class IPv6Server(ThreadingHTTPServer):
+            address_family = socket.AF_INET6
+
+        server_class = IPv6Server if self.host == "::1" else ThreadingHTTPServer
+        self._server = server_class((self.host, self.port), Handler)
         self.port = int(self._server.server_address[1])
         self._thread = threading.Thread(target=self._server.serve_forever, name="pipeline-monitor", daemon=True)
         self._thread.start()
