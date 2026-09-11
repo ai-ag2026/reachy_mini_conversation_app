@@ -102,7 +102,12 @@ override-dependencies = [
 ]
 
 [tool.uv.sources]
-reachy-hermes-agent = { path = "../reachy-hermes-agent", editable = true }
+# The runtime is not on PyPI: pin a public commit so CI runners (and any fresh checkout) can resolve
+# the [voice] extra. Do NOT request the runtime's [robot] extra here — this app owns the reachy-mini
+# pin. To develop against a sibling checkout instead, install it editable over the locked copy:
+#   uv sync --extra voice && uv pip install -e ../reachy-hermes-agent
+# and run with `uv run --no-sync ...` (a plain `uv run` re-syncs back to this pinned commit).
+reachy-hermes-agent = { git = "https://github.com/ai-ag2026/reachy-hermes-agent", rev = "255c7dc1e271245cdad280bf65099c33f013d0aa" }
 
 # ACCEPTED pre-existing conflicts (NOT from this app's core deps; do not "fix" — they belong to the
 # base robot image and changing them risks the live robot): opencv-contrib/numba/gst-signalling want

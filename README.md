@@ -141,14 +141,18 @@ Copy `.env.example` to `.env` when you want to switch backends, provide API keys
 | `AGENT_BASE_URL` | Local Agent brain: base URL of your OpenAI-compatible agent (`{url}/chat/completions`). Defaults to `http://127.0.0.1:8642/v1`. |
 | `AGENT_MODEL` | Model name sent to your agent. Defaults to `local-agent`. |
 | `AGENT_STT_BASE_URL` | Local speech-to-text endpoint (OpenAI-compatible). Defaults to `http://127.0.0.1:5092/v1`. |
-| `AGENT_STT_LANGUAGE` | Language code sent to local STT. Set to `en` for English; defaults to `en` in this setup. |
+| `AGENT_STT_LANGUAGE` | Language code sent to local STT. Defaults to `en`; set another code, or `auto` to let the STT model detect the language. |
 | `AGENT_QWEN_TTS_BASE_URL` / `AGENT_QWEN_TTS_VOICE` | Local text-to-speech endpoint and voice name. Defaults to `http://127.0.0.1:7034/v1` and `default`. |
-| `AGENT_TTS_SPEED` / `AGENT_OUTPUT_GAIN` | Control synthesis pace and post-synthesis loudness. The quiet local profile uses `0.95` speed and `0.9` gain to improve naturalness and avoid clipping. |
-| `AGENT_PIPELINE_MONITOR` / `AGENT_PIPELINE_MONITOR_PORT` | Enable the loopback-only live STT/LLM/TTS/tool monitor and choose its port. Defaults to `1` and `8766`. |
-| `AGENT_IDLE_BREATHING` / `AGENT_IDLE_ACTIONS` | Disable continuous breathing and random idle movement with `0` for quiet microphone operation. |
-| `AGENT_SPEECH_WOBBLE` / `AGENT_SPEECH_SWAY` | Disable speech-driven head and antenna movement with `0`. |
-| `AGENT_TURN_EMOTES` / `AGENT_ORIENT_TO_SPEAKER` | Disable automatic end-of-turn emotions and microphone-triggered head turns with `0`. |
-| `AGENT_THINKING_CUE` / `AGENT_THINKING_CUE_MAX_DEG` | Enable the subtle antenna-only backend-waiting cue and set its maximum amplitude. Defaults in the quiet profile to `1` and `2.0` degrees. |
+| `AGENT_TTS_SPEED` / `AGENT_OUTPUT_GAIN` | Synthesis pace (sent to the TTS server, clamped to `0.5`–`2.0`) and post-synthesis loudness. Defaults to `1.0` and `0.9`; `0.95` speed often sounds more natural. |
+| `AGENT_PIPELINE_MONITOR` / `AGENT_PIPELINE_MONITOR_PORT` | Loopback-only live STT/LLM/TTS/tool monitor and its port. Defaults to `1` (on) and `8766`. |
+| `AGENT_PIPELINE_MONITOR_LOG_CONTENT` | Defaults to `0`: monitor log lines record stage, text length and metadata only. Set `1` to also log the transcript/assistant text. |
+| `AGENT_PLATFORM_API_KEY` / `AGENT_PLATFORM_API_KEY_FILE` | Shared secret sent in the platform `hello` frame (the key, or an absolute path to a file containing it; the nonempty variable wins). File contents are stripped and must match the gateway's `REACHY_WS_API_KEY_FILE` (or `REACHY_WS_API_KEY`). A 1008 authentication rejection stops reconnects until the app is restarted. |
+| `REACHY_MINI_HOST` | Reachy daemon host/IP for network connection (same as `--robot-host`). Unset = SDK auto-detection. |
+| `AGENT_IDLE_BREATHING` / `AGENT_IDLE_ACTIONS` | Idle breathing and random idle movement. Both default to `1` (on); set `0` for quiet microphone operation. |
+| `AGENT_SPEECH_WOBBLE` / `AGENT_SPEECH_SWAY` | Speech-driven head wobble and antenna sway. Both default to `1` (on); set `0` to disable. |
+| `AGENT_TURN_EMOTES` / `AGENT_ORIENT_TO_SPEAKER` | End-of-turn emotions and microphone-triggered head turns. Both default to `1` (on); set `0` to disable. |
+| `AGENT_THINKING_CUE` / `AGENT_THINKING_CUE_MAX_DEG` | Subtle antenna-only cue while waiting for the backend, and its amplitude. Defaults to `1` (on) and `2.0` degrees. |
+| `AGENT_ANTENNA_REST_DEG` | Outward antenna rest bias that avoids servo hunting at zero. Defaults to `10` (clamped to `0`–`20`). |
 | `AGENT_DAEMON_BASE_URL` | Reachy daemon HTTP API for playback/movement/status. Defaults to `http://127.0.0.1:8000`. |
 | `LOCAL_VISION_MODEL` | Hugging Face model path for local vision processing (only used with `--local-vision` flag, defaults to `HuggingFaceTB/SmolVLM2-2.2B-Instruct`). |
 
@@ -167,17 +171,20 @@ Everything runs against endpoints **you** configure — no cloud key, no vendor 
 
 With the local backend running, open `http://127.0.0.1:8766` to watch the live pipeline. The page shows
 final STT text, sentence-level LLM output, the exact text submitted to TTS, body tool calls/results, and
-stage timing. It keeps a small in-memory history only; raw audio, credentials, and private model reasoning
-are never included. Set `AGENT_PIPELINE_MONITOR=0` to disable it.
+stage timing. Text is shown verbatim (it is not redacted), which is why the server only binds to loopback
+and keeps a small in-memory history; raw audio is not captured. Log lines carry stage, length and
+metadata only unless `AGENT_PIPELINE_MONITOR_LOG_CONTENT=1`. Set `AGENT_PIPELINE_MONITOR=0` to disable it.
 
-To audition every voice exposed by the configured MLX Audio model with identical text and collect
-per-voice synthesis timings:
+To audition every voice exposed by the configured TTS model with identical text and collect per-voice
+synthesis timings:
 
 ```bash
 .venv/bin/python scripts/tts_voice_audition.py --output /private/tmp/reachy-tts-auditions
 ```
 
-The utility writes one WAV per voice plus `results.json`. Use `--voice NAME` to benchmark a shortlist.
+The utility reads `AGENT_QWEN_TTS_BASE_URL`, `AGENT_QWEN_TTS_MODEL` and `AGENT_TTS_SPEED` (from the
+environment or `.env`; falling back to a local MLX Audio Kokoro server) and writes one WAV per voice plus
+`results.json`. Use `--voice NAME` to benchmark a shortlist.
 
 Minimal `.env` to get started (see `.env.example` for the full list):
 
@@ -476,3 +483,22 @@ Quick start:
 ## License
 
 Apache 2.0
+
+### Local-agent runtime requirements
+
+This branch requires **Python 3.12** and **reachy-mini >=1.10,<1.11**. Install with
+`uv sync --extra voice` (add `--extra gemini` for the Gemini backend). The voice runtime is
+locked to a public Git commit so fresh checkouts and CI do not need a sibling repository.
+For local runtime development, run `uv pip install -e ../reachy-hermes-agent` after syncing,
+then launch with `uv run --no-sync`; normal syncing restores the pinned runtime. Do not add
+its `[robot]` extra: this app owns the Reachy SDK requirement.
+
+The quiet settings in `.env.example` are commented suggestions, not active defaults.
+`AGENT_QUICKTAKE_ENABLED`, `AGENT_TOOL_STATUS_ENABLED`, and `AGENT_LEAD_IN_ENABLED` default
+to `1`; `AGENT_GAP_FILL_MAX` defaults to `2`. Set all four to `0` for answer-only speech.
+The motion switches listed above also default to `1`.
+
+Deploy this client together with the hermes-reachy authentication adapter update. Configure
+`AGENT_PLATFORM_API_KEY_FILE` with an absolute path; its stripped contents must equal the
+secret in the gateway's `REACHY_WS_API_KEY_FILE`. After a policy close (1008), fix the
+credentials and restart the app to reconnect.

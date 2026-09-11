@@ -2323,7 +2323,7 @@ wheels = [
 [[package]]
 name = "reachy-hermes-agent"
 version = "0.1.0"
-source = { editable = "../reachy-hermes-agent" }
+source = { git = "https://github.com/ai-ag2026/reachy-hermes-agent?rev=255c7dc1e271245cdad280bf65099c33f013d0aa#255c7dc1e271245cdad280bf65099c33f013d0aa" }
 dependencies = [
     { name = "httpx" },
     { name = "numpy" },
@@ -2334,19 +2334,6 @@ voice = [
     { name = "onnxruntime" },
     { name = "websocket-client" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "onnxruntime", marker = "extra == 'voice'", specifier = ">=1.20" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "reachy-mini", extras = ["mujoco"], marker = "extra == 'robot'", specifier = ">=1.8.3,<1.10" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
-    { name = "websocket-client", marker = "extra == 'voice'", specifier = ">=1.7" },
-]
-provides-extras = ["dev", "voice", "robot"]
 
 [[package]]
 name = "reachy-mini"
@@ -2473,7 +2460,7 @@ requires-dist = [
     { name = "opencv-python", marker = "extra == 'all-vision'", specifier = ">=4.13.0.92" },
     { name = "opencv-python", marker = "extra == 'yolo-vision'", specifier = ">=4.13.0.92" },
     { name = "python-dotenv" },
-    { name = "reachy-hermes-agent", extras = ["voice"], marker = "extra == 'voice'", editable = "../reachy-hermes-agent" },
+    { name = "reachy-hermes-agent", extras = ["voice"], marker = "extra == 'voice'", git = "https://github.com/ai-ag2026/reachy-hermes-agent?rev=255c7dc1e271245cdad280bf65099c33f013d0aa" },
     { name = "reachy-mini", extras = ["mujoco"], specifier = ">=1.10.0,<1.11" },
     { name = "reachy-mini-dances-library" },
     { name = "reachy-mini-toolbox" },
