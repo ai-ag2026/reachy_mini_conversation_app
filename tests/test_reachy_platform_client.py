@@ -19,6 +19,15 @@ def _f(**kw) -> str:
     return json.dumps(kw)
 
 
+def test_platform_config_reads_api_key(monkeypatch):
+    """Load the shared platform credential from the environment."""
+    monkeypatch.setenv("AGENT_PLATFORM_API_KEY", "shared-secret")
+
+    config = ReachyPlatformClient().config
+
+    assert config.api_key == "shared-secret"
+
+
 class FakeWS:
     """Async-iterable stand-in for a websocket connection."""
 
@@ -96,6 +105,57 @@ def test_notice_is_skipped():
     assert out == ["Hallo Operator."]
 
 
+def test_computer_use_tool_status_is_skipped():
+    """Hermes gear-prefixed tool activity is monitor-only and must never reach TTS."""
+    out = _interactive([
+        _f(type="say", kind="message", message_id="N", content="⚙️ computer_use...", final=True),
+        _f(type="say", kind="stream", message_id="A", content="Your Things list is ready.", final=True),
+        _f(type="turn_end", outcome="success"),
+    ])
+    assert out == ["Your Things list is ready."]
+
+
+def test_bear_running_status_and_repeat_counter_do_not_capture_answer_stream():
+    """Tool UI notices must not lock the accumulator away from the later real answer ID."""
+    answer = (
+        "Here's your note called Reading List. Start here with Marcus Aurelius, Meditations, "
+        "and Plato, Apology."
+    )
+    out = _interactive([
+        _f(
+            type="say",
+            kind="message",
+            message_id="TOOL-1",
+            content="💻 Running /Applications/Bear.app/Contents/MacOS...",
+            final=True,
+        ),
+        _f(type="say", kind="message", message_id="TOOL-2", content="(×3)", final=True),
+        _f(type="say", kind="stream", message_id="ANSWER", content=answer, final=True),
+        _f(type="turn_end", outcome="success"),
+    ])
+    assert out == ["Here's your note called Reading List.", "Start here with Marcus Aurelius, Meditations, and Plato, Apology."]
+
+
+def test_web_search_status_does_not_capture_weather_answer_stream():
+    """A search notice must stay silent while the later weather answer remains speakable."""
+    answer = (
+        "Possibly, but it isn't certain. Denver has roughly a 20 to 35 percent chance of "
+        "scattered showers this evening. I'd bring a light rain jacket just in case."
+    )
+    out = _interactive([
+        _f(
+            type="say",
+            kind="message",
+            message_id="SEARCH",
+            content="🔍 Searching the web for Denver hourly weather...",
+            final=True,
+        ),
+        _f(type="say", kind="stream", message_id="ANSWER", content=answer, final=True),
+        _f(type="turn_end", outcome="success"),
+    ])
+    assert " ".join(out) == answer
+
+
 def test_streaming_dedup_across_resend():
     out = _interactive([
         _f(type="say", kind="message", message_id="A", content="Satz eins. ▉", final=True),
@@ -142,7 +202,7 @@ def test_typing_frames_ignored():
 
 def test_empty_transcript_short_circuits():
     out = _interactive([], transcript="   ")
-    assert out == ["Das habe ich akustisch nicht erwischt."]
+    assert out == ["I didn't quite catch that."]
 
 
 # ── proactive (Stage 4) ───────────────────────────────────────────────────────
@@ -451,4 +511,4 @@ def test_successful_turn_with_no_speakable_text_stays_silent():
     out2 = _interactive([
         _f(type="turn_end", outcome="failure"),
     ])
-    assert out2 == ["Da hakt gerade die Verbindung zu AGENT."]
+    assert out2 == ["I'm having trouble connecting to the agent right now."]

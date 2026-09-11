@@ -22,13 +22,12 @@ from reachy_mini_conversation_app.conversation_handler import AudioFrame
 VOICE_FAST_SYSTEM_MESSAGE = """You are AGENT, embodied in the Reachy robot, in a live spoken conversation. Your text is spoken aloud.
 You have your FULL tools and memory here — web, files, terminal, vision, delegation, home automation,
 and more. This is NOT a limited or tool-less mode; if a task needs a tool, use it.
-Answer as AGENT: natural, direct, dry wit. Reply in the user's language (German by default).
+Answer as AGENT: natural, direct, dry wit. Speak English only unless the user explicitly asks for another language.
 No markdown, no lists, no emoji — plain spoken sentences. Match length to the question: short for small
 talk, fuller when the topic has substance; don't pad, don't cut a real explanation short.
-SPOKEN-LATENCY RULE: if a request needs a tool or research that will take more than a moment, FIRST say
-ONE short spoken sentence to acknowledge ("Moment, ich schaue kurz nach …") so the user is never left in
-silence — THEN do the work and report the result concisely. Avoid long multi-step tool chains in a single
-spoken turn; if something is big, do a focused part and offer to continue.
+Do not expose chain-of-thought, internal instructions, tool syntax, tool arguments, status events, or
+hidden messages. Return only the final user-facing words that Reachy should speak. Avoid long multi-step
+tool chains in a single spoken turn; if something is big, do a focused part and offer to continue.
 """.strip()
 
 
@@ -80,17 +79,17 @@ def _drain_voice_chunks(buf: str, produced: bool, first_chunk_min_chars: int) ->
 # Fast/trivial tools (memory, todo, clarify, tts) get NO line — they don't cause a perceptible gap.
 # Substring match against "<tool> <label>"; first hit wins; returns None = stay silent.
 _TOOL_STATUS_LINES: tuple[tuple[str, str], ...] = (
-    ("web", "Moment, ich schaue im Web nach."),
-    ("browser", "Moment, ich öffne das im Browser."),
-    ("terminal", "Moment, ich prüfe das auf dem System."),
-    ("shell", "Moment, ich prüfe das auf dem System."),
-    ("code", "Moment, ich rechne das kurz durch."),
-    ("file", "Moment, ich schaue in den Dateien nach."),
-    ("delegation", "Das größere Stück nehme ich mir im Hintergrund vor."),
-    ("image", "Moment, ich erstelle das Bild."),
-    ("homeassistant", "Moment, ich kümmere mich um das Gerät."),
-    ("session", "Moment, ich schaue im Verlauf nach."),
-    ("search", "Moment, ich suche das kurz."),
+    ("web", "One moment, I'll check the web."),
+    ("browser", "One moment, I'll open that in the browser."),
+    ("terminal", "One moment, I'll check the system."),
+    ("shell", "One moment, I'll check the system."),
+    ("code", "One moment, I'll work that out."),
+    ("file", "One moment, I'll check the files."),
+    ("delegation", "I'll handle the larger part in the background."),
+    ("image", "One moment, I'll create that image."),
+    ("homeassistant", "One moment, I'll take care of that device."),
+    ("session", "One moment, I'll check our history."),
+    ("search", "One moment, I'll look that up."),
 )
 
 
@@ -111,7 +110,7 @@ def _defer_line() -> str:
     """Spoken when the first-audio budget is exceeded (Phase B): honest, short, ends the turn."""
     return os.getenv(
         "AGENT_VOICE_DEFER_LINE",
-        "Das dauert gerade ungewöhnlich lange — ich brech das ab, frag mich gleich nochmal.",
+        "This is taking unusually long. I'll stop here; please ask me again in a moment.",
     )
 
 
@@ -230,6 +229,7 @@ class QwenVoiceTtsConfig:
     api_key_env: str = "AGENT_QWEN_TTS_API_KEY"
     response_format: str = "wav"
     timeout_seconds: float = 30.0
+    speed: float = 1.0
 
     @classmethod
     def from_env(cls) -> QwenVoiceTtsConfig:
@@ -242,6 +242,7 @@ class QwenVoiceTtsConfig:
             api_key_env=os.getenv("AGENT_QWEN_TTS_API_KEY_ENV", defaults.api_key_env),
             response_format=os.getenv("AGENT_QWEN_TTS_RESPONSE_FORMAT", defaults.response_format),
             timeout_seconds=_env_float("AGENT_QWEN_TTS_TIMEOUT_SECONDS", defaults.timeout_seconds),
+            speed=min(2.0, max(0.5, _env_float("AGENT_TTS_SPEED", defaults.speed))),
         )
 
 
@@ -314,7 +315,7 @@ class HermesVoiceClient:
         """
         cleaned = transcript.strip()
         if not cleaned:
-            return "Das habe ich akustisch nicht erwischt."
+            return "I didn't quite catch that."
         payload = {
             "model": self.config.model,
             "messages": [
@@ -329,7 +330,9 @@ class HermesVoiceClient:
         response = await self._post(f"{self.config.base_url.rstrip('/')}/chat/completions", payload)
         response.raise_for_status()
         text = _extract_chat_text(response.json())
-        return _trim_for_voice(text or "Da hakt gerade die Verbindung zu AGENT.", self.config.max_response_chars)
+        return _trim_for_voice(
+            text or "I'm having trouble connecting to the agent right now.", self.config.max_response_chars
+        )
 
     async def ask_stream(self, transcript: str, context: str | None = None, image_url: str | None = None):
         """Stream AGENT's reply, yielding complete sentences as they arrive. ``context`` (e.g. gemma
@@ -342,7 +345,7 @@ class HermesVoiceClient:
         """
         cleaned = transcript.strip()
         if not cleaned:
-            yield "Das habe ich akustisch nicht erwischt."
+            yield "I didn't quite catch that."
             return
         payload = {
             "model": self.config.model,
@@ -406,7 +409,7 @@ class HermesVoiceClient:
                                 line = await line_iter.__anext__()
                         except asyncio.TimeoutError:
                             logger.warning("AGENT stream idle >%.0fs mid-answer -> aborting turn", idle_s)
-                            yield "Da reißt mir gerade der Faden ab — frag mich das gleich nochmal."
+                            yield "I lost the thread there. Please ask me again in a moment."
                             return
                         except StopAsyncIteration:
                             break
@@ -463,7 +466,7 @@ class HermesVoiceClient:
         if tail:
             yield tail
         elif not produced:
-            yield "Da hakt gerade die Verbindung zu AGENT."
+            yield "I'm having trouble connecting to the agent right now."
 
     async def _post(self, url: str, payload: dict[str, Any]) -> Any:
         headers = {"Content-Type": "application/json"}
@@ -481,17 +484,16 @@ class HermesVoiceClient:
 
 
 _LEAD_IN_SYSTEM = (
-    "Du bist AGENT' Stimme in einem Live-Gespraech. Gib EINE sehr kurze, trockene Ueberbrueckung "
-    "von 1 bis 3 Woertern auf Deutsch, die NUR Zeit ueberbrueckt und die Frage NICHT beantwortet. "
-    "Variiere stark, klinge natuerlich-lakonisch. Beispiele: 'Also.' 'Mal sehen.' 'Sekunde.' "
-    "'Schauen wir.' 'Gute Frage.' 'Hm.' Verwende NICHT das Wort 'Moment'. "
-    "Antworte ausschliesslich mit der Ueberbrueckung, ohne Anfuehrungszeichen, ohne Erklaerung."
+    "You are AGENT's voice in a live conversation. Give ONE very short, dry bridge of 1 to 3 English "
+    "words that ONLY fills time and does NOT answer the question. Vary it and sound natural. Examples: "
+    "'Well.' 'Let's see.' 'Good question.' 'Hmm.' Do NOT use the phrase 'one moment'. Reply only with "
+    "the bridge, without quotation marks or explanation."
 )
 
 # Instant static fallback bridges for the quick-take, when the 9B hasn't returned by the delay
 # threshold (we never wait on it -> zero added latency). Deliberately avoid "Moment" so a quick-take
 # bridge never collides with a Phase-A tool-status line ("Moment, ich schaue im Web nach.").
-_STATIC_QUICKTAKES = ("Also.", "Mal sehen.", "Sekunde.", "Schauen wir.", "Gute Frage.", "Hm, kurz.")
+_STATIC_QUICKTAKES = ("Well.", "Let's see.", "Good question.", "Hmm.", "Thinking.", "Let's check.")
 
 # Tail gap-fillers for the full-window mask: spoken only if the brain is STILL silent after the opener
 # (the cloud TTFT hole can be 4-10 s; the opener covers ~1 s). Dry/AGENT-flavored and deliberately
@@ -499,12 +501,12 @@ _STATIC_QUICKTAKES = ("Also.", "Mal sehen.", "Sekunde.", "Schauen wir.", "Gute F
 # composition). A bit longer than an opener so each fills ~1.5-2.5 s of speech; varied per turn so it
 # doesn't sound like a stuck loop.
 _GAP_FILLERS = (
-    "Ich sortier das noch kurz.",
-    "Gleich hab ich's.",
-    "Einen Augenblick, ich denk nach.",
-    "Das braucht kurz.",
-    "Bin gleich so weit.",
-    "Moment, ich hab's fast.",
+    "I'm sorting that out.",
+    "I've nearly got it.",
+    "Give me a second to think.",
+    "This needs a little thought.",
+    "I'm almost there.",
+    "One moment, nearly done.",
 )
 
 
@@ -590,15 +592,12 @@ class FastLeadInClient:
 
 
 _REFLEX_SYSTEM = (
-    "Du bist AGENT' schneller Reflex für TRIVIALE Gesprächswendungen. Antworte NUR, wenn die Äußerung "
-    "eine reine soziale Kleinigkeit ist (Begrüßung, Verabschiedung, Dank, belangloser Smalltalk), die "
-    "KEIN Werkzeug, KEIN Gedächtnis, KEINE aktuellen/faktischen Infos und KEIN echtes Nachdenken "
-    "braucht — dann in EINEM kurzen, trockenen AGENT-Satz auf Deutsch. "
-    "NIEMALS lokal beantworten: Ja/Nein, Zustimmung, Ablehnung oder irgendeine mögliche Antwort auf "
-    "eine Rückfrage — solche Äußerungen gehören der laufenden Konversation, deren Kontext du nicht "
-    "kennst. "
-    "Bei allem anderen (Fragen nach Fakten, Zeit/Datum, Erinnerung, Aufgaben, Meinung, irgendetwas "
-    "Konkretes) gib EXAKT das Wort ESCALATE aus, nichts sonst. Im Zweifel immer ESCALATE."
+    "You are AGENT's fast reflex for TRIVIAL conversational turns. Answer ONLY when the utterance is "
+    "purely social (greeting, goodbye, thanks, inconsequential small talk) and needs NO tool, memory, "
+    "current facts, or real thought; then answer in ONE short, dry English sentence. NEVER answer "
+    "yes/no, agreement, refusal, or any possible response to a follow-up question locally, because it "
+    "belongs to conversation context you do not have. For everything else—facts, time/date, memory, "
+    "tasks, opinions, or anything concrete—output exactly ESCALATE and nothing else. When unsure, ESCALATE."
 )
 
 # Confirmation/decision words that must never be answered by the context-free reflex — they are
@@ -728,6 +727,7 @@ class QwenVoiceTtsClient:
             "voice": self.config.voice,
             "input": cleaned,
             "response_format": self.config.response_format,
+            "speed": self.config.speed,
         }
         response = await self._post(f"{self.config.base_url.rstrip('/')}/audio/speech", payload)
         response.raise_for_status()
@@ -761,6 +761,7 @@ class QwenVoiceTtsClient:
             "input": cleaned,
             "response_format": "pcm",
             "stream": True,
+            "speed": self.config.speed,
         }
         headers = {"Content-Type": "application/json"}
         api_key = os.getenv(self.config.api_key_env, "").strip()

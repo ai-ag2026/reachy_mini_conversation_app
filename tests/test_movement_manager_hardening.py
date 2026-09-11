@@ -88,6 +88,17 @@ def test_external_offsets_zero_is_behavior_neutral():
     assert np.allclose(head, np.eye(4), atol=1e-9)
 
 
+def test_quiet_idle_uses_stable_antenna_rest_offset(monkeypatch):
+    """Stationary antennas keep the small outward bias that avoids zero-position servo hunting."""
+    monkeypatch.setenv("AGENT_ANTENNA_REST_DEG", "10")
+    mgr = MovementManager(_FakeRobot())
+
+    _, antennas, _ = mgr.state.last_primary_pose
+
+    assert antennas[0] == pytest.approx(-np.deg2rad(10), abs=1e-6)
+    assert antennas[1] == pytest.approx(np.deg2rad(10), abs=1e-6)
+
+
 def test_breathing_interpolates_body_yaw_to_zero():
     """Review 2026-07-02 round 2, P2: breathing hard-returned body_yaw=0.0 from the first tick —
     a body SNAP after any emotion ending with body_yaw != 0. Phase 1 now blends it to 0."""
@@ -164,6 +175,36 @@ def test_breathing_starts_from_last_primary_pose_not_measured():
     breathing = mgr.move_queue[0]
     assert breathing.interpolation_start_pose[0, 3] == pytest.approx(0.01, abs=1e-6)  # primary, not measured
     assert breathing.interpolation_start_body_yaw == pytest.approx(0.02, abs=1e-6)
+
+
+def test_quiet_profile_disables_idle_breathing(monkeypatch):
+    """Quiet mode holds position instead of continuously exercising head and antenna motors."""
+    monkeypatch.setenv("AGENT_IDLE_BREATHING", "0")
+    mgr = MovementManager(_FakeRobot())
+    mgr.state.last_activity_time = 0.0
+
+    mgr._manage_breathing(current_time=mgr.idle_inactivity_delay + 1.0)
+
+    assert mgr.state.current_move is None
+    assert list(mgr.move_queue) == []
+    assert mgr._breathing_active is False
+
+
+def test_listening_stops_active_idle_breathing():
+    """Microphone listening takes priority and immediately stops motor-noisy breathing."""
+    mgr = MovementManager(_FakeRobot())
+    breathing = BreathingMove(np.eye(4, dtype=np.float32), (0.0, 0.0))
+    mgr.state.current_move = breathing
+    mgr.state.move_start_time = 1.0
+    mgr.move_queue.append(BreathingMove(np.eye(4, dtype=np.float32), (0.0, 0.0)))
+    mgr._breathing_active = True
+    mgr._last_listening_toggle_time = mgr._now() - 1.0
+
+    mgr._handle_command("set_listening", True, mgr._now())
+
+    assert mgr.state.current_move is None
+    assert list(mgr.move_queue) == []
+    assert mgr._breathing_active is False
 
 
 def test_dance_emotion_error_fallback_holds_last_pose():

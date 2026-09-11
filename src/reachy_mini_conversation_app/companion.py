@@ -104,8 +104,7 @@ class CompanionWatcher:
                     if self._speech_streak >= 2:
                         self._speech_streak = 0
                         self._fire(
-                            "In der Naehe wird gesprochen (Mikrofon-Array), aber niemand hat dich "
-                            "direkt angesprochen."
+                            "Speech is happening nearby (microphone array), but nobody addressed you directly."
                         )
                 else:
                     self._speech_streak = 0
@@ -121,7 +120,7 @@ class CompanionWatcher:
                         self._face_last_seen = None
                     else:
                         if self._face_last_seen is None and (now - self._face_absent_since) > 120.0:
-                            self._fire("Ein Gesicht ist gerade (wieder) vor deiner Kamera aufgetaucht.")
+                            self._fire("A face has just appeared, or reappeared, in front of your camera.")
                         self._face_last_seen = seen
             except asyncio.CancelledError:
                 return
@@ -133,7 +132,7 @@ def event_transcript(desc: str) -> str:
     """The event notice handed to the brain as a turn. Explicitly frames it as a non-user event
     and licenses silence — an empty answer ends the turn without speech."""
     return (
-        f"[Ereignis, Companion-Modus — KEIN Nutzer-Turn: {desc}] "
-        "Reagiere nur, wenn eine kurze, natuerliche Reaktion wirklich passt (ein Satz, in character). "
-        "Wenn nicht: antworte mit komplett leerem Text und tue nichts."
+        f"[Event, companion mode — NOT a user turn: {desc}] "
+        "Respond only if one short, natural English reaction genuinely fits (one sentence, in character). "
+        "Otherwise return completely empty text and do nothing."
     )

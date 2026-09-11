@@ -1,6 +1,7 @@
 # ruff: noqa: D101,D102,D103,D105,D107
 from __future__ import annotations
 import os
+import re
 import time
 import asyncio
 import inspect
@@ -16,11 +17,31 @@ from fastrtc import AdditionalOutputs, wait_for_item
 from numpy.typing import NDArray
 
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
+from reachy_mini_conversation_app.pipeline_monitor import get_pipeline_monitor
+from reachy_mini_conversation_app.speech_text import normalize_for_speech
 from reachy_mini_conversation_app.conversation_handler import AudioFrame, HandlerOutput, ConversationHandler
 
 
 MaybeText: TypeAlias = str | object
 MaybeAudioFrame: TypeAlias = AudioFrame | object
+
+
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F1E6-\U0001F1FF"
+    "\U0001F300-\U0001FAFF"
+    "\u2600-\u26FF"
+    "\u2700-\u27BF"
+    "]"
+)
+_EMOJI_JOINERS_RE = re.compile(r"[\u200d\ufe0e\ufe0f\u20e3]")
+
+
+def _text_for_speech(text: str) -> str:
+    """Return plain speakable text, removing characters TTS may pronounce as emoji names."""
+    clean = _EMOJI_RE.sub(" ", str(text or ""))
+    clean = _EMOJI_JOINERS_RE.sub("", clean)
+    return " ".join(clean.split()).strip()
 
 
 class TextAgentClient(Protocol):
@@ -75,6 +96,7 @@ class AgentVoiceHandler(ConversationHandler):
         self.deps = deps
         self.agent_client = agent_client
         self.tts_client = tts_client
+        self._pipeline_monitor = get_pipeline_monitor()
         # Optional fast 9B lead-in (adaptive latency mask). None -> plain full-brain path.
         self._lead_in_client = lead_in_client
         self.output_queue: asyncio.Queue[AudioFrame | AdditionalOutputs] = asyncio.Queue()
@@ -120,7 +142,7 @@ class AgentVoiceHandler(ConversationHandler):
         # Output loudness: AGENT plays at _output_gain (applied to all queued PCM, > 1 = louder than the
         # ALSA max). Non-pausing barge-in keeps AGENT at full volume while the user speaks (Operator's
         # preferred behavior — no ducking); the awake HW AEC keeps the user's parallel transcript clean.
-        self._output_gain = float(os.getenv("AGENT_OUTPUT_GAIN", "1.2"))
+        self._output_gain = float(os.getenv("AGENT_OUTPUT_GAIN", "0.9"))
         self._last_progress = 0.0       # monotonic of the last queued audio / barge decision (stall watchdog)
         # Barge only once AGENT is actually SPEAKING: during the silent 3-6s think phase there is nothing
         # to interrupt, and a user re-prompt ("hörst du mich?") would otherwise commit-barge and cancel
@@ -163,7 +185,7 @@ class AgentVoiceHandler(ConversationHandler):
             self._barge_event.clear()
             self._status_chirp("notify")  # non-verbal cue that an unsolicited (background) result is coming
             self.output_queue.put_nowait(AdditionalOutputs({"role": "assistant", "content": text}))
-            lead = os.getenv("AGENT_PROACTIVE_LEADIN", "Kurzer Nachtrag:").strip()
+            lead = os.getenv("AGENT_PROACTIVE_LEADIN", "A quick update:").strip()
             for part in ([lead] if lead else []) + [text]:
                 if self._closed:
                     break
@@ -445,7 +467,7 @@ class AgentVoiceHandler(ConversationHandler):
 
             # Defensive dedup: if a previous session's watchers are still alive (re-entry
             # without an interleaved shutdown), stop them before creating replacements.
-            for attr in ("_idle_runner", "_speech_sway", "_imu_watcher", "_companion"):
+            for attr in ("_idle_runner", "_speech_sway", "_thinking_cue", "_imu_watcher", "_companion"):
                 obj = getattr(self, attr, None)
                 if obj is not None:
                     try:
@@ -463,10 +485,11 @@ class AgentVoiceHandler(ConversationHandler):
 
             self._idle_runner = IdleActionRunner(self.deps, is_busy=_busy)
             self._idle_runner.start()
-            from reachy_mini_conversation_app.liveliness import ImuWatcher, SpeechSway
+            from reachy_mini_conversation_app.liveliness import ImuWatcher, SpeechSway, ThinkingAntennaCue
 
             self._speech_sway = SpeechSway(self.deps.movement_manager)
             self._speech_sway.start()
+            self._thinking_cue = ThinkingAntennaCue(self.deps.movement_manager)
             self._imu_watcher = ImuWatcher(self.deps.reachy_mini, self._on_imu_event)
             self._imu_watcher.start()
             # Body-tool surface (Stufe 3): the gateway's reachy_body tool reaches the body here.
@@ -560,7 +583,7 @@ class AgentVoiceHandler(ConversationHandler):
 
             if CompanionWatcher.enabled():
                 self._begin_event_turn(event_transcript(
-                    "Du wurdest gerade angestossen oder hochgehoben (IMU)."
+                    "You were just bumped or lifted (IMU)."
                 ))
         except Exception:
             logger.debug("IMU reaction failed", exc_info=True)
@@ -598,7 +621,7 @@ class AgentVoiceHandler(ConversationHandler):
         ev = getattr(self, "_closed_event", None)
         if ev is not None:
             ev.set()  # release the blocked start_up() (session ends)
-        for attr in ("_idle_runner", "_speech_sway", "_imu_watcher", "_companion"):
+        for attr in ("_idle_runner", "_speech_sway", "_thinking_cue", "_imu_watcher", "_companion"):
             obj = getattr(self, attr, None)
             if obj is not None:
                 try:
@@ -1118,7 +1141,7 @@ class AgentVoiceHandler(ConversationHandler):
                 headers["Authorization"] = f"Bearer {key}"
             payload = {
                 "model": os.getenv("AGENT_MODEL", "local-agent"),
-                "messages": [{"role": "user", "content": "Bereit?"}],
+                "messages": [{"role": "user", "content": "Ready?"}],
                 "max_tokens": 1,
                 "reasoning_effort": "minimal",
                 "stream": False,
@@ -1322,7 +1345,7 @@ class AgentVoiceHandler(ConversationHandler):
         if len(desc) > 900:
             desc = desc[:900].rstrip() + "…"
         logger.info("AGENT vision: VIDEO context attached (%d frames, %d chars)", len(frames), len(desc))
-        return f"[Was Reachys Kamera über die letzten Sekunden sieht (Video): {desc}]"
+        return f"[What Reachy's camera saw over the last few seconds (video): {desc}]"
 
     async def handle_final_transcript(self, transcript: str) -> None:
         # Stream AGENT sentence-by-sentence and speak each as it arrives — this cuts time-to-first-audio
@@ -1330,10 +1353,14 @@ class AgentVoiceHandler(ConversationHandler):
         # single-flight gate in finally; _speak_sentence keeps _speaking_until ahead of playback so the
         # mic stays muted continuously through the whole reply.
         my_seq = self._turn_seq  # generation guard: a stale/cancelled turn must not clobber a newer one
+        turn_started = time.perf_counter()
+        first_llm_chunk = True
         try:
             clean_transcript = transcript.strip()
             if not clean_transcript or self._closed:
                 return
+            if self._pipeline_monitor is not None:
+                self._pipeline_monitor.emit("stt", clean_transcript, language=os.getenv("AGENT_STT_LANGUAGE", "en"))
             async with self._turn_lock:
                 if self._closed:
                     return
@@ -1342,6 +1369,9 @@ class AgentVoiceHandler(ConversationHandler):
                 self._reset_barge(keep_pending=True)  # fresh barge state per turn (no stale onset/transcript)
                 self._turn_spoke = False  # barge suppressed until this turn produces audio
                 self._sync_listening(False)  # utterance done — unfreeze antennas
+                thinking_cue = getattr(self, "_thinking_cue", None)
+                if thinking_cue is not None:
+                    thinking_cue.start()
                 runner = getattr(self, "_idle_runner", None)
                 if runner is not None:
                     runner.note_activity()
@@ -1401,6 +1431,12 @@ class AgentVoiceHandler(ConversationHandler):
                                 committed = self._pending_barge is not None
                                 break
                             parts.append(sentence)
+                            if self._pipeline_monitor is not None:
+                                elapsed_ms = round((time.perf_counter() - turn_started) * 1000)
+                                self._pipeline_monitor.emit(
+                                    "llm", sentence, first_chunk=first_llm_chunk, elapsed_ms=elapsed_ms
+                                )
+                            first_llm_chunk = False
                             if await self._speak_sentence(sentence):
                                 spoke_any = True
                             if self._closed:
@@ -1421,7 +1457,7 @@ class AgentVoiceHandler(ConversationHandler):
                     logger.warning("AGENT ask/stream failed", exc_info=True)
                     if not parts:
                         self._status_chirp("error")  # non-verbal "uh-oh" before the spoken fallback
-                        fallback = "Da hakt gerade die Verbindung zu AGENT."
+                        fallback = "I'm having trouble connecting to the agent right now."
                         try:
                             # actually SPEAK it — play_loop only logs AdditionalOutputs, so the
                             # user got total silence on a gateway outage (review 2026-07-02, P2)
@@ -1438,10 +1474,13 @@ class AgentVoiceHandler(ConversationHandler):
                 if parts and not spoke_any and not committed:
                     self.output_queue.put_nowait(
                         AdditionalOutputs(
-                            {"role": "assistant", "content": "Ich habe die Antwort erzeugt, aber die Sprachausgabe hakt gerade."}
+                            {"role": "assistant", "content": "I generated the answer, but speech output is having trouble."}
                         )
                     )
         finally:
+            thinking_cue = getattr(self, "_thinking_cue", None)
+            if thinking_cue is not None:
+                thinking_cue.stop()
             # A committed barge becomes the next turn directly (no new LISTEN). Hand off the
             # single-flight gate to that turn so the mic stays serialized. Always clear the barge
             # event/state here so a set event can never persist past a turn and deafen _feed_barge.
@@ -1491,7 +1530,24 @@ class AgentVoiceHandler(ConversationHandler):
         the GStreamer appsrc queue small (a whole blob overflows max-bytes). Falls back to the full-WAV
         synthesize() if the client can't stream. Returns True if any audio was queued.
         """
-        seg = max(1, int(24000 * 0.5))
+        thinking_cue = getattr(self, "_thinking_cue", None)
+        if thinking_cue is not None:
+            thinking_cue.stop()
+        text = _text_for_speech(text)
+        text = normalize_for_speech(text)
+        if not text:
+            logger.debug("Skipping emoji-only TTS content")
+            return False
+        segment_seconds = min(1.0, max(0.02, self._float_env("AGENT_PLAYBACK_SEGMENT_S", 0.5)))
+        if self._pipeline_monitor is not None:
+            self._pipeline_monitor.emit(
+                "tts",
+                text,
+                model=os.getenv("AGENT_QWEN_TTS_MODEL", "qwen3-tts"),
+                voice=os.getenv("AGENT_QWEN_TTS_VOICE", "default"),
+                speed=self._float_env("AGENT_TTS_SPEED", 1.0),
+            )
+        seg = max(1, int(24000 * segment_seconds))
         stream_pcm = getattr(self.tts_client, "stream_pcm", None)
         spoke = False
         if self._barge_event.is_set():  # a barge fired before this sentence started -> don't speak it
@@ -1504,7 +1560,7 @@ class AgentVoiceHandler(ConversationHandler):
                     if self._barge_event.is_set():
                         return spoke  # interrupted mid-sentence: stop pulling/queuing immediately
                     sr = int(csr or 24000)
-                    seg = max(1, int(sr * 0.5))
+                    seg = max(1, int(sr * segment_seconds))
                     buf = np.concatenate([buf, np.asarray(chunk, dtype=np.int16)])
                     while len(buf) >= seg and not self._closed:
                         if self._barge_event.is_set():
@@ -1524,7 +1580,7 @@ class AgentVoiceHandler(ConversationHandler):
             else:
                 out_sr, out_audio = await _resolve_audio_frame(self.tts_client.synthesize(text))
                 out_sr = int(out_sr or 24000)
-                seg = max(1, int(out_sr * 0.5))
+                seg = max(1, int(out_sr * segment_seconds))
                 for start in range(0, len(out_audio), seg):
                     if self._closed or self._barge_event.is_set():
                         return spoke

@@ -208,6 +208,32 @@ async def test_speech_sway_applies_and_clears(monkeypatch):
         sway.stop()
 
 
+@pytest.mark.asyncio
+async def test_thinking_cue_is_small_slow_and_releases(monkeypatch):
+    monkeypatch.setenv("AGENT_THINKING_CUE", "1")
+    monkeypatch.setenv("AGENT_THINKING_CUE_DELAY_S", "0")
+    monkeypatch.setenv("AGENT_THINKING_CUE_MAX_DEG", "2")
+    monkeypatch.setenv("AGENT_THINKING_CUE_HZ", "1")
+    from reachy_mini_conversation_app.liveliness import ThinkingAntennaCue
+
+    calls = []
+
+    class _MM:
+        def set_external_offsets(self, offsets, antennas=(0.0, 0.0)):
+            calls.append(antennas)
+
+    cue = ThinkingAntennaCue(_MM())
+    cue.start()
+    await asyncio.sleep(0.3)
+    cue.stop()
+
+    moving = [a for a in calls if abs(a[0]) > 0.0001]
+    assert moving
+    assert all(abs(a[0]) <= np.deg2rad(2.0) + 1e-9 for a in moving)
+    assert all(abs(a[0] + a[1]) < 1e-9 for a in moving)
+    assert calls[-1] == (0.0, 0.0)
+
+
 def test_imu_magnitude_extraction():
     from reachy_mini_conversation_app.liveliness import ImuWatcher
 

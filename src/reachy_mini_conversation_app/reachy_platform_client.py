@@ -32,6 +32,8 @@ import json
 import uuid
 import asyncio
 import logging
+from pathlib import Path
+from typing import Any
 from collections.abc import Callable, Awaitable
 
 from reachy_mini_conversation_app.agent_clients import (
@@ -56,7 +58,12 @@ _CURSOR_STRIP = {ord(c): None for c in _CURSORS}
 # conversational answer text, so not spoken.
 _NOTICE_PREFIXES = ("ℹ", "\U0001f4ec", "✅", "\U0001f40d", "⚡", "\U0001f4e1",
                     "\U0001f514", "\U0001f916", "♻", "⏳", "❌", "⚠",
-                    "\U0001f4ce", "\U0001f4f7", "\U0001f3a4", "\U0001f500")
+                    "⚙", "\U0001f6e0", "\U0001f527", "\U0001f4ce", "\U0001f4f7",
+                    "\U0001f3a4", "\U0001f500")
+_EMOJI_PREFIX_RE = re.compile(
+    r"^[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]"
+)
+_REPEAT_NOTICE_RE = re.compile(r"^\(\s*[×x]\s*\d+\s*\)$", re.IGNORECASE)
 
 
 def _complete_sentences(text: str) -> tuple[list[str], str]:
@@ -72,9 +79,13 @@ def _complete_sentences(text: str) -> tuple[list[str], str]:
 
 
 def _looks_like_notice(text: str) -> bool:
-    """A gateway system/tool-status line (emoji-prefixed), not spoken answer text."""
+    """A gateway system/tool-status line, not user-facing answer text."""
     t = (text or "").lstrip()
-    return bool(t) and t.startswith(_NOTICE_PREFIXES)
+    return bool(t) and (
+        t.startswith(_NOTICE_PREFIXES)
+        or _EMOJI_PREFIX_RE.match(t) is not None
+        or _REPEAT_NOTICE_RE.fullmatch(t) is not None
+    )
 
 
 class _AnswerAccumulator:
@@ -140,6 +151,13 @@ class ReachyPlatformConfig:
     def __init__(self) -> None:
         self.ws_url = os.getenv("AGENT_PLATFORM_WS_URL", "ws://127.0.0.1:8770/robot/reachy").strip()
         self.robot_id = os.getenv("AGENT_PLATFORM_ROBOT_ID", "reachy").strip() or "reachy"
+        self.api_key = os.getenv("AGENT_PLATFORM_API_KEY", "").strip()
+        key_file = os.getenv("AGENT_PLATFORM_API_KEY_FILE", "").strip()
+        if not self.api_key and key_file:
+            try:
+                self.api_key = Path(key_file).expanduser().read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                logger.error("[reachy-platform] could not read API key file %s: %s", key_file, exc)
         self.turn_timeout_s = _env_float("AGENT_PLATFORM_TURN_TIMEOUT_S", 90.0)
         self.connect_timeout_s = _env_float("AGENT_PLATFORM_CONNECT_TIMEOUT_S", 10.0)
         self.max_response_chars = _env_int("AGENT_MAX_RESPONSE_CHARS", 2000)
@@ -217,7 +235,15 @@ class ReachyPlatformClient:
 
                 ws = await asyncio.wait_for(connect(self.config.ws_url), timeout=self.config.connect_timeout_s)
                 try:
-                    await ws.send(json.dumps({"type": "hello", "robot_id": self.config.robot_id}))
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "hello",
+                                "robot_id": self.config.robot_id,
+                                "api_key": self.config.api_key,
+                            }
+                        )
+                    )
                 except Exception:
                     # gateway reset between connect and hello: close instead of leaking the socket
                     try:
@@ -344,12 +370,18 @@ class ReachyPlatformClient:
     async def _run_tool_call(self, frame: dict) -> None:
         """Execute one gateway body-tool request and send the tool_result back."""
         tcid = str(frame.get("tool_call_id") or "")
+        from reachy_mini_conversation_app.pipeline_monitor import get_pipeline_monitor
+
+        monitor = get_pipeline_monitor()
+        action = str(frame.get("action") or "")
+        if monitor is not None:
+            monitor.emit("tool", action, status="started", tool_call_id=tcid)
         handler = self.on_tool_call
         if handler is None:
             result: dict = {"error": "no tool handler registered"}
         else:
             try:
-                result = await handler(str(frame.get("action") or ""), frame.get("params") or {})
+                result = await handler(action, frame.get("params") or {})
                 if not isinstance(result, dict):
                     result = {"result": result}
             except Exception as exc:
@@ -364,6 +396,8 @@ class ReachyPlatformClient:
                  "robot_id": self.config.robot_id},
                 ensure_ascii=False,
             ))
+            if monitor is not None:
+                monitor.emit("tool", action, status="completed", tool_call_id=tcid, ok="error" not in result)
         except Exception as exc:
             logger.warning("[reachy-platform] tool_result send failed: %s", exc)
 
@@ -453,7 +487,7 @@ class ReachyPlatformClient:
         """
         cleaned = (transcript or "").strip()
         if not cleaned:
-            yield "Das habe ich akustisch nicht erwischt."
+            yield "I didn't quite catch that."
             return
         composed = _compose_user(cleaned, context)
 
@@ -474,7 +508,7 @@ class ReachyPlatformClient:
                 self._active_turn_id = None  # invariant: no active turn -> frames route proactive
                 logger.warning("[reachy-platform] send failed: %s", e)
                 await self._reset_session(only_if=turn_ws)  # keep the reconnect supervisor alive
-                yield "Da hakt gerade die Verbindung zu AGENT."
+                yield "I'm having trouble connecting to the agent right now."
                 return
 
             acc = _AnswerAccumulator()
@@ -508,7 +542,7 @@ class ReachyPlatformClient:
                     if turn_outcome == "success":
                         logger.info("[reachy-platform] turn ended successfully with no speakable text")
                     else:
-                        yield "Da hakt gerade die Verbindung zu AGENT."
+                        yield "I'm having trouble connecting to the agent right now."
             except asyncio.TimeoutError:
                 logger.warning("[reachy-platform] turn timed out")
                 # Stop the gateway's generation: without the /stop it keeps producing, and the
@@ -519,12 +553,12 @@ class ReachyPlatformClient:
                 except Exception:
                     pass
                 if not produced:
-                    yield "Das dauert gerade ungewöhnlich lange — frag mich gleich nochmal."
+                    yield "This is taking unusually long. Please ask me again in a moment."
             except Exception as e:
                 logger.warning("[reachy-platform] turn failed: %s", e)
                 await self._reset_session(only_if=turn_ws)  # keep the reconnect supervisor alive
                 if not produced:
-                    yield "Da hakt gerade die Verbindung zu AGENT."
+                    yield "I'm having trouble connecting to the agent right now."
             finally:
                 self._turn_q = None
                 self._active_turn_id = None  # no active turn -> later frames route as proactive
@@ -532,4 +566,6 @@ class ReachyPlatformClient:
     async def ask(self, transcript: str, context: str | None = None, image_url: str | None = None) -> str:
         parts = [chunk async for chunk in self.ask_stream(transcript, context, image_url)]
         text = " ".join(p.strip() for p in parts if p and p.strip())
-        return _trim_for_voice(text or "Da hakt gerade die Verbindung zu AGENT.", self.config.max_response_chars)
+        return _trim_for_voice(
+            text or "I'm having trouble connecting to the agent right now.", self.config.max_response_chars
+        )

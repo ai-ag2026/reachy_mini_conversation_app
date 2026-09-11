@@ -141,7 +141,14 @@ Copy `.env.example` to `.env` when you want to switch backends, provide API keys
 | `AGENT_BASE_URL` | Local Agent brain: base URL of your OpenAI-compatible agent (`{url}/chat/completions`). Defaults to `http://127.0.0.1:8642/v1`. |
 | `AGENT_MODEL` | Model name sent to your agent. Defaults to `local-agent`. |
 | `AGENT_STT_BASE_URL` | Local speech-to-text endpoint (OpenAI-compatible). Defaults to `http://127.0.0.1:5092/v1`. |
+| `AGENT_STT_LANGUAGE` | Language code sent to local STT. Set to `en` for English; defaults to `en` in this setup. |
 | `AGENT_QWEN_TTS_BASE_URL` / `AGENT_QWEN_TTS_VOICE` | Local text-to-speech endpoint and voice name. Defaults to `http://127.0.0.1:7034/v1` and `default`. |
+| `AGENT_TTS_SPEED` / `AGENT_OUTPUT_GAIN` | Control synthesis pace and post-synthesis loudness. The quiet local profile uses `0.95` speed and `0.9` gain to improve naturalness and avoid clipping. |
+| `AGENT_PIPELINE_MONITOR` / `AGENT_PIPELINE_MONITOR_PORT` | Enable the loopback-only live STT/LLM/TTS/tool monitor and choose its port. Defaults to `1` and `8766`. |
+| `AGENT_IDLE_BREATHING` / `AGENT_IDLE_ACTIONS` | Disable continuous breathing and random idle movement with `0` for quiet microphone operation. |
+| `AGENT_SPEECH_WOBBLE` / `AGENT_SPEECH_SWAY` | Disable speech-driven head and antenna movement with `0`. |
+| `AGENT_TURN_EMOTES` / `AGENT_ORIENT_TO_SPEAKER` | Disable automatic end-of-turn emotions and microphone-triggered head turns with `0`. |
+| `AGENT_THINKING_CUE` / `AGENT_THINKING_CUE_MAX_DEG` | Enable the subtle antenna-only backend-waiting cue and set its maximum amplitude. Defaults in the quiet profile to `1` and `2.0` degrees. |
 | `AGENT_DAEMON_BASE_URL` | Reachy daemon HTTP API for playback/movement/status. Defaults to `http://127.0.0.1:8000`. |
 | `LOCAL_VISION_MODEL` | Hugging Face model path for local vision processing (only used with `--local-vision` flag, defaults to `HuggingFaceTB/SmolVLM2-2.2B-Instruct`). |
 
@@ -157,6 +164,20 @@ mic → VAD → local STT → your OpenAI-compatible agent (the brain) → local
 ```
 
 Everything runs against endpoints **you** configure — no cloud key, no vendor lock-in. The full body/functionality is retained: voice (barge-in + semantic gate), one-shot vision, safe bounded head movement, and the aliveness layer (idle motion, companion reactions, emotion cues, speech sway) are all active and driven by your agent's replies and tool calls.
+
+With the local backend running, open `http://127.0.0.1:8766` to watch the live pipeline. The page shows
+final STT text, sentence-level LLM output, the exact text submitted to TTS, body tool calls/results, and
+stage timing. It keeps a small in-memory history only; raw audio, credentials, and private model reasoning
+are never included. Set `AGENT_PIPELINE_MONITOR=0` to disable it.
+
+To audition every voice exposed by the configured MLX Audio model with identical text and collect
+per-voice synthesis timings:
+
+```bash
+.venv/bin/python scripts/tts_voice_audition.py --output /private/tmp/reachy-tts-auditions
+```
+
+The utility writes one WAV per voice plus `results.json`. Use `--voice NAME` to benchmark a shortlist.
 
 Minimal `.env` to get started (see `.env.example` for the full list):
 

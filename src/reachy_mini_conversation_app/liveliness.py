@@ -397,6 +397,54 @@ class SpeechSway:
                 logger.debug("sway loop error", exc_info=True)
 
 
+class ThinkingAntennaCue:
+    """Very subtle antenna motion while the backend is working before speech begins."""
+
+    def __init__(self, movement_manager: Any) -> None:
+        self.mm = movement_manager
+        self.delay_s = _env_float("AGENT_THINKING_CUE_DELAY_S", 0.8)
+        self.max_rad = float(np.deg2rad(_env_float("AGENT_THINKING_CUE_MAX_DEG", 2.0)))
+        self.frequency_hz = _env_float("AGENT_THINKING_CUE_HZ", 0.18)
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        """Begin a delayed cue, replacing any cue left by a previous turn."""
+        self.stop()
+        if not _env_on("AGENT_THINKING_CUE", "1"):
+            return
+        self._task = asyncio.create_task(self._loop())
+
+    def stop(self) -> None:
+        """Stop the cue and release its additive antenna offset."""
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+        self._task = None
+        self._apply(0.0)
+
+    def _apply(self, offset: float) -> None:
+        setter = getattr(self.mm, "set_external_offsets", None)
+        if callable(setter):
+            try:
+                setter((0.0,) * 6, antennas=(offset, -offset))
+            except Exception:
+                logger.debug("thinking antenna cue write failed", exc_info=True)
+
+    async def _loop(self) -> None:
+        try:
+            await asyncio.sleep(max(0.0, self.delay_s))
+            started = time.monotonic()
+            while True:
+                elapsed = time.monotonic() - started
+                # Slow sine with a smooth onset so the cue reads as waiting, not twitching.
+                envelope = min(1.0, elapsed / 1.5)
+                offset = self.max_rad * envelope * float(np.sin(2.0 * np.pi * self.frequency_hz * elapsed))
+                self._apply(offset)
+                await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            self._apply(0.0)
+            return
+
+
 class ImuWatcher:
     """React when the robot is physically bumped/lifted (gap-map Stufe 2).
 

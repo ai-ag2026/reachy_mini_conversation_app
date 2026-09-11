@@ -157,6 +157,7 @@ async def test_qwen_voice_tts_client_posts_speech_and_decodes_wav() -> None:
         "voice": "default",
         "input": "Hallo Reachy.",
         "response_format": "wav",
+        "speed": 1.0,
     }
 
 
@@ -170,6 +171,14 @@ async def test_qwen_voice_tts_client_set_voice_affects_next_payload() -> None:
     await client.synthesize("Hallo.")
 
     assert http.requests[0]["json"]["voice"] == "nova_de"
+
+
+def test_qwen_voice_tts_config_reads_bounded_speed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AGENT_TTS_SPEED", "0.95")
+    assert QwenVoiceTtsConfig.from_env().speed == 0.95
+
+    monkeypatch.setenv("AGENT_TTS_SPEED", "9")
+    assert QwenVoiceTtsConfig.from_env().speed == 2.0
 
 
 @pytest.mark.asyncio
@@ -244,10 +253,10 @@ def test_tool_status_line_announces_slow_tools_only() -> None:
     from reachy_mini_conversation_app.agent_clients import _tool_status_line
 
     # Slow families announce (match by tool name or label).
-    assert _tool_status_line("web", '+web: "bitcoin price"') == "Moment, ich schaue im Web nach."
-    assert _tool_status_line("web_extract", None) == "Moment, ich schaue im Web nach."
-    assert _tool_status_line("terminal", None) == "Moment, ich prüfe das auf dem System."
-    assert _tool_status_line("delegation", None) == "Das größere Stück nehme ich mir im Hintergrund vor."
+    assert _tool_status_line("web", '+web: "bitcoin price"') == "One moment, I'll check the web."
+    assert _tool_status_line("web_extract", None) == "One moment, I'll check the web."
+    assert _tool_status_line("terminal", None) == "One moment, I'll check the system."
+    assert _tool_status_line("delegation", None) == "I'll handle the larger part in the background."
     # Fast / trivial tools: no announcement (would be noise, not a freeze).
     assert _tool_status_line("memory", '+memory: "note"') is None
     assert _tool_status_line("todo", None) is None
@@ -306,7 +315,7 @@ async def test_ask_stream_announces_slow_tool_then_streams_answer(monkeypatch: p
 
     out = [chunk async for chunk in client.ask_stream("Was kostet Bitcoin?")]
 
-    assert out == ["Moment, ich schaue im Web nach.", "Das Ergebnis ist da."]
+    assert out == ["One moment, I'll check the web.", "Das Ergebnis ist da."]
 
 
 @pytest.mark.asyncio
@@ -361,7 +370,7 @@ async def test_ask_stream_defers_when_first_audio_budget_exceeded(monkeypatch: p
 
     out = [chunk async for chunk in client.ask_stream("Mach was Langsames.")]
 
-    assert len(out) == 1 and "frag mich gleich nochmal" in out[0]
+    assert len(out) == 1 and "ask me again in a moment" in out[0]
 
 
 @pytest.mark.asyncio

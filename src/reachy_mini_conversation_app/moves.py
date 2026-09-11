@@ -32,6 +32,7 @@ Safety
 """
 
 from __future__ import annotations
+import os
 import time
 import logging
 import threading
@@ -282,7 +283,12 @@ class MovementManager:
         self.state = MovementState()
         self.state.last_activity_time = self._now()
         neutral_pose = create_head_pose(0, 0, 0, 0, 0, 0, degrees=True)
-        self.state.last_primary_pose = (neutral_pose, (0.0, 0.0), 0.0)
+        # A small outward antenna bias is the mechanically stable rest pose. Holding both
+        # antennas at exactly zero can make an otherwise idle servo hunt/twitch; breathing
+        # used to supply this bias, but quiet mode intentionally disables breathing.
+        rest_deg = min(20.0, max(0.0, float(os.getenv("AGENT_ANTENNA_REST_DEG", "10"))))
+        rest_rad = float(np.deg2rad(rest_deg))
+        self.state.last_primary_pose = (neutral_pose, (-rest_rad, rest_rad), 0.0)
 
         # Move queue (primary moves)
         self.move_queue: deque[Move] = deque()
@@ -470,6 +476,14 @@ class MovementManager:
             self._is_listening = desired_state
             self._last_listening_blend_time = now
             if desired_state:
+                # The microphone gets priority over expressiveness: stop continuous idle
+                # breathing immediately so motor noise cannot mask the user's voice.
+                if isinstance(self.state.current_move, BreathingMove):
+                    self.state.current_move = None
+                    self.state.move_start_time = None
+                    self._breathing_active = False
+                if self.move_queue:
+                    self.move_queue = deque(move for move in self.move_queue if not isinstance(move, BreathingMove))
                 # Freeze: snapshot current commanded antennas and reset blend
                 self._listening_antennas = (
                     float(self._last_commanded_pose[1][0]),
@@ -517,6 +531,17 @@ class MovementManager:
 
     def _manage_breathing(self, current_time: float) -> None:
         """Manage automatic breathing when idle."""
+        breathing_enabled = os.getenv("AGENT_IDLE_BREATHING", "1").strip().lower() not in {
+            "0", "false", "no", "off",
+        }
+        if not breathing_enabled:
+            if isinstance(self.state.current_move, BreathingMove):
+                self.state.current_move = None
+                self.state.move_start_time = None
+            if self.move_queue:
+                self.move_queue = deque(move for move in self.move_queue if not isinstance(move, BreathingMove))
+            self._breathing_active = False
+            return
         if (
             self.state.current_move is None
             and not self.move_queue

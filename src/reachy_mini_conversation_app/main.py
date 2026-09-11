@@ -75,6 +75,12 @@ def run(
         load_startup_settings_into_runtime,
     )
 
+    # config imports and loads the project .env, but CLI parsing happens before that import.
+    # Resolve the saved robot host again here so a normal flag-free launch does not silently
+    # fall back to localhost/reachy-mini.local.
+    if getattr(args, "robot_host", None) is None:
+        args.robot_host = os.getenv("REACHY_MINI_HOST", "").strip() or None
+
     logger = setup_logger(args.debug)
     logger.info("Starting Reachy Mini Conversation App")
     if app_stop_event is None:
@@ -83,8 +89,12 @@ def run(
     managed_robot = None
     managed_movement_manager = None
     saved_speaker_volume: int | None = None
+    _runtime_cleaned = threading.Event()
 
     def _cleanup_runtime_after_signal() -> None:
+        if _runtime_cleaned.is_set():
+            return
+        _runtime_cleaned.set()
         if managed_movement_manager is not None:
             try:
                 managed_movement_manager.stop(skip_neutral=True)  # goto_sleep follows — no neutral detour
@@ -94,10 +104,17 @@ def run(
             # Sleep pose BEFORE disable_motors: without it torque cuts out in the upright
             # NEUTRAL pose and the head drops mechanically. The goto_sleep in run()'s finally
             # can't help — by then the client is already disconnected (audit 2026-07-02).
-            try:
-                managed_robot.goto_sleep()
-            except Exception as exc:
-                logger.debug("Error going to sleep pose after signal: %s", exc)
+            sleep_ok = False
+            for attempt in range(2):
+                try:
+                    managed_robot.goto_sleep()
+                    sleep_ok = True
+                    logger.info("Reachy reached the sleep pose")
+                    break
+                except Exception as exc:
+                    logger.warning("Sleep-pose attempt %d failed: %s", attempt + 1, exc)
+                    if attempt == 0:
+                        time.sleep(0.5)
             if saved_speaker_volume is not None:
                 try:
                     managed_robot.client.send_command(SetVolumeCmd(volume=saved_speaker_volume))
@@ -106,8 +123,9 @@ def run(
                     logger.debug("Error restoring speaker volume after signal: %s", exc)
             try:
                 managed_robot.disable_motors()
+                logger.info("Reachy motors disabled%s", "" if sleep_ok else " after sleep-pose failure")
             except Exception as exc:
-                logger.debug("Error disabling motors after signal: %s", exc)
+                logger.error("Could not disable Reachy motors during shutdown: %s", exc)
             try:
                 managed_robot.disable_wobbling()
             except Exception as exc:
@@ -192,6 +210,9 @@ def run(
             robot_kwargs = {}
             if args.robot_name is not None:
                 robot_kwargs["robot_name"] = args.robot_name
+            if args.robot_host is not None:
+                robot_kwargs["host"] = args.robot_host
+                robot_kwargs["connection_mode"] = "network"
 
             logger.info("Initializing ReachyMini (SDK will auto-detect appropriate backend)")
             robot = ReachyMini(**robot_kwargs)
@@ -394,10 +415,17 @@ def run(
     # speaker to avoid double playback.
     # Non-fatal enhancement: a transient daemon heartbeat miss here used to crash the whole app
     # AFTER the manager started — motors enabled, no goto_sleep (review 2026-07-02 round 2, P2).
-    try:
-        robot.enable_wobbling()
-    except Exception as exc:
-        logger.warning(f"enable_wobbling failed (continuing without speech wobble): {exc}")
+    if os.getenv("AGENT_SPEECH_WOBBLE", "1").strip().lower() not in {"0", "false", "no", "off"}:
+        try:
+            robot.enable_wobbling()
+        except Exception as exc:
+            logger.warning(f"enable_wobbling failed (continuing without speech wobble): {exc}")
+    else:
+        try:
+            robot.disable_wobbling()
+            logger.info("Speech-driven head wobble disabled for quiet motion")
+        except Exception as exc:
+            logger.debug("Could not disable speech wobble at startup: %s", exc)
     if args.gradio:
         # LocalStream.launch() starts the playback pipeline in headless mode.
         # In Gradio mode nothing else does, and push_audio_sample is a no-op
@@ -443,32 +471,9 @@ def run(
     except KeyboardInterrupt:
         logger.info("Keyboard interruption in main thread... closing server.")
     finally:
-        movement_manager.stop(skip_neutral=True)  # goto_sleep follows — no neutral detour
-        try:
-            robot.goto_sleep()  # leave Reachy asleep on exit (daemon keeps --no-wake-up-on-start)
-        except Exception as e:
-            logger.debug(f"Error putting robot to sleep during shutdown: {e}")
-        try:
-            robot.disable_wobbling()
-        except Exception as e:
-            logger.debug(f"Error disabling wobbling during shutdown: {e}")
-        if saved_speaker_volume is not None:
-            try:
-                robot.client.send_command(SetVolumeCmd(volume=saved_speaker_volume))
-                logger.info(f"Restored robot speaker volume to {saved_speaker_volume}")
-            except Exception as e:
-                logger.debug(f"Error restoring speaker volume during shutdown: {e}")
         if camera_worker:
             camera_worker.stop()
-
-        # Ensure media is explicitly closed before disconnecting
-        try:
-            robot.media.close()
-        except Exception as e:
-            logger.debug(f"Error closing media during shutdown: {e}")
-
-        # prevent connection to keep alive some threads
-        robot.client.disconnect()
+        _cleanup_runtime_after_signal()
         time.sleep(1)
         for sig, previous_handler in previous_signal_handlers.items():
             signal.signal(sig, previous_handler)

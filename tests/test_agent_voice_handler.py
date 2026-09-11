@@ -8,11 +8,22 @@ import pytest
 from fastrtc import AdditionalOutputs
 
 from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
-from reachy_mini_conversation_app.agent_voice_handler import AgentVoiceHandler, FakeAudioTtsClient, FakeTextAgentClient
+from reachy_mini_conversation_app.agent_voice_handler import (
+    AgentVoiceHandler,
+    FakeAudioTtsClient,
+    FakeTextAgentClient,
+    _text_for_speech,
+)
 
 
 class _FakeMovementManager:
     pass
+
+
+def test_text_for_speech_removes_emojis() -> None:
+    assert _text_for_speech("Great news 😊 — all done ✅") == "Great news — all done"
+    assert _text_for_speech("👨‍💻") == ""
+    assert _text_for_speech("The temperature is 72°F.") == "The temperature is 72°F."
 
 
 class _AsyncTextClient:
@@ -109,6 +120,20 @@ async def test_agent_voice_handler_accepts_async_agent_and_tts_clients() -> None
 
 
 @pytest.mark.asyncio
+async def test_agent_voice_handler_normalizes_display_text_before_tts() -> None:
+    tts_client = FakeAudioTtsClient(sample_rate=24000, audio=np.array([1], dtype=np.int16))
+    handler = AgentVoiceHandler(
+        ToolDependencies(reachy_mini=object(), movement_manager=_FakeMovementManager()),
+        agent_client=FakeTextAgentClient(reply="There is a 20–35% chance. See https://example.com."),
+        tts_client=tts_client,
+    )
+
+    await handler.handle_final_transcript("Will it rain?")
+
+    assert tts_client.calls == ["There is a 20 to 35 percent chance. See the link"]
+
+
+@pytest.mark.asyncio
 async def test_agent_voice_handler_apply_personality_keeps_agent_identity() -> None:
     handler = AgentVoiceHandler(
         ToolDependencies(reachy_mini=object(), movement_manager=_FakeMovementManager()),
@@ -158,7 +183,7 @@ async def test_agent_voice_handler_reports_sanitized_agent_failure() -> None:
     messages = _messages(_drain(handler))
     assert messages == [
         {"role": "user", "content": "Hallo"},
-        {"role": "assistant", "content": "Da hakt gerade die Verbindung zu AGENT."},
+        {"role": "assistant", "content": "I'm having trouble connecting to the agent right now."},
     ]
     assert "internal" not in str(messages)
 
@@ -178,7 +203,7 @@ async def test_agent_voice_handler_reports_sanitized_tts_failure_without_audio()
     assert messages == [
         {"role": "user", "content": "Hallo"},
         {"role": "assistant", "content": "Antwort."},
-        {"role": "assistant", "content": "Ich habe die Antwort erzeugt, aber die Sprachausgabe hakt gerade."},
+        {"role": "assistant", "content": "I generated the answer, but speech output is having trouble."},
     ]
     assert not [output for output in outputs if isinstance(output, tuple)]
     assert "internal" not in str(messages)

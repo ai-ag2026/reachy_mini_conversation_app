@@ -8,7 +8,7 @@ version = "0.7.0"
 authors = [{ name = "Pollen Robotics", email = "contact@pollen-robotics.com" }]
 description = ""
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.12,<3.13"
 # Core pins aligned to what actually runs in the robot apps_venv (audit 2026-07-02): a stale 0.6.2
 # editable dist-info and drifted pins meant `pip check` was red and a reinstall would have changed
 # the working robot. These now match the installed reality so a reinstall reproduces it.
@@ -33,7 +33,7 @@ dependencies = [
     #Reachy mini
     "reachy_mini_dances_library",
     "reachy_mini_toolbox",
-    "reachy-mini[mujoco]==1.8.4",  # was 1.8.3; installed 1.8.4 (daemon firmware 1.8.3, compatible)
+    "reachy-mini[mujoco]>=1.10.0,<1.11",
     "mcp>=1.26.0",  # was >=1.27.1; installed 1.26.0
 ]
 
@@ -88,6 +88,7 @@ reachy-mini-conversation-app = "reachy_mini_conversation_app.main:main"
 
 [tool.uv]
 exclude-newer = "7 days"
+
 # Temporary resolver bridge for Reachy Mini with the current Gradio dev stack:
 # gradio==5.50.1.dev1 declares an older pydantic cap, while reachy-mini requires newer
 # FastAPI/Pydantic/Uvicorn. Keep explicit and revisit when Gradio/Reachy metadata converges
@@ -99,6 +100,9 @@ override-dependencies = [
   "pydantic==2.13.4",
   "uvicorn==0.49.0",
 ]
+
+[tool.uv.sources]
+reachy-hermes-agent = { path = "../reachy-hermes-agent", editable = true }
 
 # ACCEPTED pre-existing conflicts (NOT from this app's core deps; do not "fix" — they belong to the
 # base robot image and changing them risks the live robot): opencv-contrib/numba/gst-signalling want
