@@ -116,7 +116,7 @@ def _defer_line() -> str:
 
 
 def _compose_user(cleaned: str, context: str | None) -> str:
-    """Prepend a clearly-labeled context line (e.g. parallel vision) to the user turn so the brain  answers as the single voice using it as INPUT — ordered composition, no second stream to merge."""
+    """Prepend a clearly-labeled context line (e.g. parallel vision) to the user turn so the brain answers as the single voice using it as INPUT — ordered composition, no second stream to merge."""
     ctx = (context or "").strip()
     return f"{ctx}\n\n{cleaned}" if ctx else cleaned
 
@@ -315,7 +315,7 @@ class HermesVoiceClient:
         return out
 
     async def ask(self, transcript: str, context: str | None = None, image_url: str | None = None) -> str:
-        """Ask AGENT for a short spoken answer. ``context`` (e.g. gemma vision) is folded into the user  turn as labeled input; ``image_url`` attaches a native image (premium native-vision path)."""
+        """Ask AGENT for a short spoken answer. ``context`` (e.g. gemma vision) is folded into the user turn as labeled input; ``image_url`` attaches a native image (premium native-vision path)."""
         cleaned = transcript.strip()
         if not cleaned:
             return "I didn't quite catch that."
@@ -340,7 +340,7 @@ class HermesVoiceClient:
     async def ask_stream(
         self, transcript: str, context: str | None = None, image_url: str | None = None
     ) -> AsyncIterator[str]:
-        """Stream AGENT's reply, yielding complete sentences as they arrive. ``context`` (e.g. gemma  vision) is folded into the user turn as labeled input; ``image_url`` attaches a native image (premium native-vision path).
+        """Stream AGENT's reply, yielding complete sentences as they arrive. ``context`` (e.g. gemma vision) is folded into the user turn as labeled input; ``image_url`` attaches a native image (premium native-vision path).
 
         Pipelining sentences into per-sentence TTS cuts time-to-first-audio dramatically vs awaiting
         the whole reply then synthesizing it in one block. Falls back to a single yield if the server

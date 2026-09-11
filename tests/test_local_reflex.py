@@ -72,7 +72,7 @@ def test_empty_transcript_is_none():
 
 
 def test_confirmations_never_answered_locally():
-    """A context-free reflex must never eat a confirmation the stateful session is waiting for  (review 2026-07-02 round 2, P1-6): hard filter, no network call."""
+    """A context-free reflex must never eat a confirmation the stateful session is waiting for (review 2026-07-02 round 2, P1-6): hard filter, no network call."""
     c, http = _client("Gerne.")
     for utterance in ("Ja, bitte.", "Nein.", "Okay, mach das.", "Ja", "Passt, genau so.", "Stopp.", "Weiter bitte."):
         assert asyncio.run(c.answer(utterance)) is None, utterance

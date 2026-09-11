@@ -444,7 +444,7 @@ def test_ask_stream_sends_turn_id_and_reader_drops_mid_turn_straggler():
 
 # ── review 2026-07-02 round 2: P1-8 (proactive without turn_end) + P1-9 (interrupt drain) ──
 def test_proactive_without_turn_end_flushes_after_settle(monkeypatch):
-    """Cron/send_message deliveries call adapter.send() directly and never emit a turn_end —  the settle timer must flush them instead of waiting forever (P1-8)."""
+    """Cron/send_message deliveries call adapter.send() directly and never emit a turn_end — the settle timer must flush them instead of waiting forever (P1-8)."""
     monkeypatch.setenv("AGENT_PROACTIVE_SETTLE_S", "0.05")
     captured = []
     c = ReachyPlatformClient()
@@ -478,7 +478,7 @@ def test_proactive_without_turn_end_flushes_after_settle(monkeypatch):
 
 
 def test_proactive_second_delivery_after_settle_not_swallowed(monkeypatch):
-    """A delivery following a flushed (turn_end-less) one must not be swallowed by a jammed  accumulator (P1-8 second half)."""
+    """A delivery following a flushed (turn_end-less) one must not be swallowed by a jammed accumulator (P1-8 second half)."""
     monkeypatch.setenv("AGENT_PROACTIVE_SETTLE_S", "0.05")
 
     class DelayedWS(FakeWS):
@@ -535,7 +535,7 @@ def test_proactive_second_delivery_after_settle_not_swallowed(monkeypatch):
 
 
 def test_proactive_streamed_with_turn_end_not_double_spoken(monkeypatch):
-    """Streamed proactive answers (delegation watcher) end with turn_end: the settle timer must  not produce a second delivery."""
+    """Streamed proactive answers (delegation watcher) end with turn_end: the settle timer must not produce a second delivery."""
     monkeypatch.setenv("AGENT_PROACTIVE_SETTLE_S", "0.05")
     captured = _proactive(
         [
@@ -564,7 +564,7 @@ def test_proactive_streamed_with_turn_end_not_double_spoken(monkeypatch):
 
 
 def test_interrupt_drains_stale_turn_queue():
-    """interrupt() must drop the superseded turn's queued backlog (old full-resends and its  turn_end) so the interrupt turn isn't preceded by stale speech or ended early (P1-9); a reader-disconnect poison (None) must survive the drain."""
+    """interrupt() must drop the superseded turn's queued backlog (old full-resends and its turn_end) so the interrupt turn isn't preceded by stale speech or ended early (P1-9); a reader-disconnect poison (None) must survive the drain."""
 
     class _WS:
         def __init__(self):
@@ -599,7 +599,7 @@ def test_interrupt_drains_stale_turn_queue():
 
 
 def test_concurrent_ensure_session_connects_once(monkeypatch):
-    """Review 2026-07-02 round 2, P2: supervisor + ask_stream racing _ensure_session created two  sockets/two hellos; the unread one could win the gateway's robot map -> permanent wedge."""
+    """Review 2026-07-02 round 2, P2: supervisor + ask_stream racing _ensure_session created two sockets/two hellos; the unread one could win the gateway's robot map -> permanent wedge."""
     monkeypatch.setenv("AGENT_PLATFORM_API_KEY", "test-key")
     connects = {"n": 0}
 
@@ -630,7 +630,7 @@ def test_concurrent_ensure_session_connects_once(monkeypatch):
 
 
 def test_successful_turn_with_no_speakable_text_stays_silent():
-    """Review 2026-07-02 round 2, P3: a notice-only/empty SUCCESS turn falsely announced a  connection problem."""
+    """Review 2026-07-02 round 2, P3: a notice-only/empty SUCCESS turn falsely announced a connection problem."""
     out = _interactive(
         [
             _f(type="say", kind="message", message_id="N", content="ℹ Nur ein Hinweis.", final=True),

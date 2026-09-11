@@ -58,7 +58,7 @@ async def test_body_surface_allowlist_and_mapping(monkeypatch):
 
 
 def test_client_tool_call_roundtrip():
-    """A gateway tool_call frame must be executed and answered with tool_result — independent  of turn routing (the frame carries no turn_id)."""
+    """A gateway tool_call frame must be executed and answered with tool_result — independent of turn routing (the frame carries no turn_id)."""
 
     class _WS:
         def __init__(self, frames):

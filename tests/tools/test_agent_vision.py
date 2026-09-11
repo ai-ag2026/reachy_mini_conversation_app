@@ -43,7 +43,7 @@ async def test_agent_vision_uses_one_shot_frame_and_local_vision_processor() -> 
 
 @pytest.mark.asyncio
 async def test_agent_vision_blocks_person_identification_when_env_set(monkeypatch) -> None:
-    """Person-ID is ALLOWED by default (local model, personal robot — Operator); the legacy denylist  can be re-enabled via AGENT_VISION_BLOCK_PERSON_ID=1, which blocks before reading a frame."""
+    """Person-ID is ALLOWED by default (local model, personal robot — Operator); the legacy denylist can be re-enabled via AGENT_VISION_BLOCK_PERSON_ID=1, which blocks before reading a frame."""
     monkeypatch.setenv("AGENT_VISION_BLOCK_PERSON_ID", "1")
     camera_worker = MagicMock()
     vision_processor = MagicMock()

@@ -11,7 +11,7 @@ from reachy_mini_conversation_app.conversation_handler import ConversationHandle
 
 
 def _build_agent_text_client() -> TextAgentClient:
-    """Select the AGENT text transport. ``AGENT_TRANSPORT=platform`` routes through  the gateway's reachy platform adapter over WebSocket (unlocks async/proactive delivery); the default ``http`` keeps the stateless /v1/chat/completions path."""
+    """Select the AGENT text transport. ``AGENT_TRANSPORT=platform`` routes through the gateway's reachy platform adapter over WebSocket (unlocks async/proactive delivery); the default ``http`` keeps the stateless /v1/chat/completions path."""
     transport = os.getenv("AGENT_TRANSPORT", "http").strip().lower()
     if transport == "platform":
         from reachy_mini_conversation_app.reachy_platform_client import ReachyPlatformClient

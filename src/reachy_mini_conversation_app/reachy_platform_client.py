@@ -110,7 +110,7 @@ def _looks_like_notice(text: str) -> bool:
 
 
 class _AnswerAccumulator:
-    """Turns a stream of gateway ``say`` frames into ordered, deduped, voice-sized  chunks.
+    """Turns a stream of gateway ``say`` frames into ordered, deduped, voice-sized chunks.
 
     Locks onto the first non-notice message id, strips the streaming cursor, and
     emits via the shared ``_drain_voice_chunks``: the FIRST chunk may end at a clause
@@ -130,7 +130,7 @@ class _AnswerAccumulator:
         self._min = _env_int("AGENT_FIRST_CHUNK_MIN_CHARS", 15)
 
     def restart(self) -> None:
-        """After a barge/interrupt: forget the current (now-cancelled) answer and  re-lock onto the NEXT new message, ignoring stragglers of the old one."""
+        """After a barge/interrupt: forget the current (now-cancelled) answer and re-lock onto the NEXT new message, ignoring stragglers of the old one."""
         if self.answer_id is not None:
             self._ignored.add(self.answer_id)
         self.answer_id = None
@@ -350,7 +350,7 @@ class ReachyPlatformClient:
         return self._auth_rejected or self._superseded
 
     def _route(self, frame: dict[str, Any]) -> str:
-        """Decide where an inbound frame goes: 'turn' (active interactive turn), 'proactive'  (unsolicited delivery), or 'drop' (straggler of a cancelled/older turn).
+        """Decide where an inbound frame goes: 'turn' (active interactive turn), 'proactive' (unsolicited delivery), or 'drop' (straggler of a cancelled/older turn).
 
         Uses the gateway's turn_id/origin correlation (audit 2026-07-02, V5c). Falls back to the
         old purely-temporal rule when the frame carries no turn_id (older gateway): active turn -> turn.
@@ -369,7 +369,7 @@ class ReachyPlatformClient:
         return "drop"
 
     async def _reader(self) -> None:
-        """Single consumer of the ws: route each frame by turn_id to the active turn queue,  the proactive handler, or drop (straggler of a cancelled turn)."""
+        """Single consumer of the ws: route each frame by turn_id to the active turn queue, the proactive handler, or drop (straggler of a cancelled turn)."""
         ws = self._ws
         if ws is None:
             return
@@ -511,7 +511,7 @@ class ReachyPlatformClient:
             logger.warning("[reachy-platform] proactive handler failed: %s", e)
 
     async def _reset_session(self, only_if: ClientConnection | None = None) -> None:
-        """Drop the current ws/reader after a turn error so the supervisor (or the next turn)  reconnects. Does NOT stop the supervisor — that's aclose()'s job.
+        """Drop the current ws/reader after a turn error so the supervisor (or the next turn) reconnects. Does NOT stop the supervisor — that's aclose()'s job.
 
         ``only_if``: the ws the failing turn was using. A turn generator can wake seconds after
         the reader died (pacing) — by then the supervisor may have reconnected, and resetting
@@ -538,7 +538,7 @@ class ReachyPlatformClient:
         await self._reset_session()
 
     async def interrupt(self, text: str | None = None) -> None:
-        """Barge-in: cancel the gateway's in-flight turn. ``text`` = a committed  interrupt command (the gateway's ``interrupt`` mode cancels the running turn and answers this instead); ``None``/empty = a bare stop (``/stop``).
+        """Barge-in: cancel the gateway's in-flight turn. ``text`` = a committed interrupt command (the gateway's ``interrupt`` mode cancels the running turn and answers this instead); ``None``/empty = a bare stop (``/stop``).
 
         Also rolls the active turn_id to a NEW id and injects a local ``_barge_reset``
         control frame so the active ``ask_stream`` re-locks onto the interrupt turn; the

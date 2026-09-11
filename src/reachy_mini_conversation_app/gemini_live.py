@@ -4,7 +4,7 @@ Drop-in alternative to OpenaiRealtimeHandler. Uses the google-genai SDK's
 Live API for bidirectional audio streaming with function calling support.
 
 Audio formats (per Gemini Live API spec):
-  Input:  16-bit PCM, 16 kHz, mono
+  Input: 16-bit PCM, 16 kHz, mono
   Output: 16-bit PCM, 24 kHz, mono
 """
 

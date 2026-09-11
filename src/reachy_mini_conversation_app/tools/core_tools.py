@@ -56,10 +56,10 @@ class Tool(abc.ABC):
     Each tool must define:
       - name: str
       - description: str
-      - parameters_schema: Dict[str, Any]  # JSON Schema
+      - parameters_schema: Dict[str, Any] # JSON Schema
 
     Tools may override:
-      - needs_response: bool = True  # set False to skip the spoken follow-up after this tool runs
+      - needs_response: bool = True # set False to skip the spoken follow-up after this tool runs
     """
 
     _auto_register: ClassVar[bool] = True
@@ -569,7 +569,7 @@ async def dispatch_tool_call(tool_name: str, args_json: str, deps: ToolDependenc
 
 
 async def dispatch_tool_call_obj(tool_name: str, args: Dict[str, Any], deps: ToolDependencies) -> Dict[str, Any]:
-    """Dispatch a tool call whose args are already a dict (in-process callers:  idle actions, body surface, turn emotes) — no JSON round-trip."""
+    """Dispatch a tool call whose args are already a dict (in-process callers: idle actions, body surface, turn emotes) — no JSON round-trip."""
     return await _dispatch_tool_call(tool_name, dict(args or {}), deps)
 
 

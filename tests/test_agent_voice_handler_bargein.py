@@ -46,7 +46,7 @@ class _StreamAgentClient:
 
 
 class _ActingTtsClient:
-    """Streams a chunk per sentence; on the configured sentence index, simulates a completed user  utterance by invoking the handler's _classify_and_act (what _feed_barge does on an endpoint)."""
+    """Streams a chunk per sentence; on the configured sentence index, simulates a completed user utterance by invoking the handler's _classify_and_act (what _feed_barge does on an endpoint)."""
 
     def __init__(self, box: dict, *, act_on_call: int, transcript: str) -> None:
         self.box = box
@@ -141,7 +141,7 @@ class _PlatformishClient(_StreamAgentClient):
 
 @pytest.mark.asyncio
 async def test_classify_dispatches_platform_interrupt_immediately(monkeypatch) -> None:
-    """P1-5 (review 2026-07-02 round 2): a stop/commit decided during the gateway's silent  tool/think phase must reach the gateway NOW — not at the next spoken sentence."""
+    """P1-5 (review 2026-07-02 round 2): a stop/commit decided during the gateway's silent tool/think phase must reach the gateway NOW — not at the next spoken sentence."""
     monkeypatch.setattr(gate, "classify_interrupt", lambda *_a, **_k: "commit")
     client = _PlatformishClient([])
     handler = _make_handler(client, _ActingTtsClient({}, act_on_call=-1, transcript=""))
@@ -169,7 +169,7 @@ async def test_classify_bare_stop_dispatches_slash_stop(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_classify_http_transport_keeps_loop_side_path(monkeypatch) -> None:
-    """No interrupt() on the client (HTTP): the event must STAY set so the speak loop handles  the barge at the next sentence, exactly as before."""
+    """No interrupt() on the client (HTTP): the event must STAY set so the speak loop handles the barge at the next sentence, exactly as before."""
     monkeypatch.setattr(gate, "classify_interrupt", lambda *_a, **_k: "commit")
     client = _StreamAgentClient([])  # no interrupt attr
     handler = _make_handler(client, _ActingTtsClient({}, act_on_call=-1, transcript=""))
@@ -183,7 +183,7 @@ async def test_classify_http_transport_keeps_loop_side_path(monkeypatch) -> None
 
 @pytest.mark.asyncio
 async def test_silent_phase_commit_is_deferred_and_fires_at_first_audio(monkeypatch) -> None:
-    """Review 2026-07-02 round 2, P2: a commit during the silent think phase must not vanish —  it defers via _pending_barge and executes at the first queued audio."""
+    """Review 2026-07-02 round 2, P2: a commit during the silent think phase must not vanish — it defers via _pending_barge and executes at the first queued audio."""
     monkeypatch.setattr(gate, "classify_interrupt", lambda *_a, **_k: "commit")
     client = _PlatformishClient([])
     handler = _make_handler(client, _ActingTtsClient({}, act_on_call=-1, transcript=""))
@@ -223,7 +223,7 @@ async def test_silent_phase_bare_stop_lets_turn_deliver(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_stale_classify_after_turn_end_is_dropped(monkeypatch) -> None:
-    """Review 2026-07-02 round 2, P2: a gate decision arriving after its turn ended (turn_seq  rolled) must neither stop the NEXT turn nor linger as a ghost _pending_barge."""
+    """Review 2026-07-02 round 2, P2: a gate decision arriving after its turn ended (turn_seq rolled) must neither stop the NEXT turn nor linger as a ghost _pending_barge."""
     monkeypatch.setattr(gate, "classify_interrupt", lambda *_a, **_k: "commit")
     client = _PlatformishClient([])
     handler = _make_handler(client, _ActingTtsClient({}, act_on_call=-1, transcript=""))

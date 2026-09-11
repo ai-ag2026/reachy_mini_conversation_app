@@ -1,5 +1,5 @@
 # ruff: noqa: D103
-"""Stage-2 preemptive turn-start: the speculative turn holds its audio behind a gate until the real  endpoint confirms, and adopts only when the final transcript equals the partial it started on."""
+"""Stage-2 preemptive turn-start: the speculative turn holds its audio behind a gate until the real endpoint confirms, and adopts only when the final transcript equals the partial it started on."""
 
 from __future__ import annotations
 import asyncio
