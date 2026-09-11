@@ -531,7 +531,7 @@ class AgentVoiceHandler(ConversationHandler):
         await self._closed_event.wait()
 
     def _play_wav_path(self, path: str) -> None:
-        """Queue a wav file (e.g. an emotion's bundled sound) on the spoken-audio path —  respects the half-duplex mute and books the playback clock (speech=False)."""
+        """Queue a wav file (e.g. an emotion's bundled sound) on the spoken-audio path — respects the half-duplex mute and books the playback clock (speech=False)."""
         try:
             from reachy_mini_conversation_app.liveliness import wav_file_to_pcm
 
@@ -568,7 +568,7 @@ class AgentVoiceHandler(ConversationHandler):
         return await run_body_action(self.deps, action, params, chirp=self._status_chirp)
 
     def _begin_event_turn(self, text: str) -> bool:
-        """Start a turn from a LOCAL event (companion mode) — same single-flight discipline as a  user transcript; refused while any turn is active."""
+        """Start a turn from a LOCAL event (companion mode) — same single-flight discipline as a user transcript; refused while any turn is active."""
         if self._turn_active or self._closed:
             return False
         self._turn_active = True
@@ -1002,7 +1002,7 @@ class AgentVoiceHandler(ConversationHandler):
         asyncio.create_task(self._classify_and_act(txt, my_seq=self._turn_seq, silent_phase=silent_phase))
 
     async def _classify_and_act(self, transcript: str, my_seq: int | None = None, silent_phase: bool = False) -> None:
-        """Classify a completed user utterance heard while AGENT was talking, then act:  ignore -> AGENT keeps talking; stop -> stop AGENT, forward nothing; commit -> stop AGENT and forward the WHOLE transcript as the next turn. Runs concurrently with the speak loop; the LLM gate runs off the event loop. Stopping = set _barge_event (the speak loop bails) + drain queue.
+        """Classify a completed user utterance heard while AGENT was talking, then act: ignore -> AGENT keeps talking; stop -> stop AGENT, forward nothing; commit -> stop AGENT and forward the WHOLE transcript as the next turn. Runs concurrently with the speak loop; the LLM gate runs off the event loop. Stopping = set _barge_event (the speak loop bails) + drain queue.
 
         Always clears the single-flight flag (any path) so candidates can fire again.
         """
@@ -1068,7 +1068,7 @@ class AgentVoiceHandler(ConversationHandler):
             self._classify_inflight = False
 
     async def _dispatch_barge_if_set(self) -> None:
-        """Platform-interrupt dispatch, guarded: if the speak loop already handled the barge  (event cleared), do nothing — a second interrupt would /stop the new turn."""
+        """Platform-interrupt dispatch, guarded: if the speak loop already handled the barge (event cleared), do nothing — a second interrupt would /stop the new turn."""
         if self._barge_event.is_set() and self._turn_active and not self._closed:
             try:
                 await self._maybe_platform_barge()
@@ -1091,7 +1091,7 @@ class AgentVoiceHandler(ConversationHandler):
             self._last_progress = time.monotonic()
 
     async def _maybe_platform_barge(self) -> bool:
-        """Platform transport barge-in: interrupt the gateway's turn IN PLACE instead  of tearing down the ask_stream and respawning (which, over a multiplexed ws, would let the cancelled turn's stragglers be spoken proactively).
+        """Platform transport barge-in: interrupt the gateway's turn IN PLACE instead of tearing down the ask_stream and respawning (which, over a multiplexed ws, would let the cancelled turn's stragglers be spoken proactively).
 
         Returns True to CONTINUE the same ask_stream — a committed command makes the
         gateway cancel the current turn and answer the new one, and the client re-locks
@@ -1357,7 +1357,7 @@ class AgentVoiceHandler(ConversationHandler):
             return None
 
     async def _video_scene_context(self, transcript: str) -> str | None:
-        """Grab a short multi-frame clip and let GEMMA (only) describe what happens over time (Gemma  3n does video); fold the description into the brain's prompt as labeled input. gemma-only — uses AGENT_VLM_BASE_URL/MODEL (the dedicated gemma vision endpoint)."""
+        """Grab a short multi-frame clip and let GEMMA (only) describe what happens over time (Gemma 3n does video); fold the description into the brain's prompt as labeled input. gemma-only — uses AGENT_VLM_BASE_URL/MODEL (the dedicated gemma vision endpoint)."""
         n = max(1, int(self._float_env("AGENT_VIDEO_FRAMES", 6)))
         interval = self._float_env("AGENT_VIDEO_INTERVAL_S", 0.15)
         frames = []
@@ -1584,17 +1584,15 @@ class AgentVoiceHandler(ConversationHandler):
 
         Streaming (response_format=pcm) yields the first audio ~176ms after the request vs waiting for the
         whole-sentence WAV; pacing + segmenting keeps the GStreamer appsrc queue small (a whole blob overflows
-        max-bytes). Falls back to the full-WAV synthesize() if the client can't stream. Returns True if any
-        audio was queued.
+        max-bytes). Falls back to the full-WAV synthesize() if the client can't stream. Returns True if audio was queued or normalization leaves nothing to say.
         """
         thinking_cue = getattr(self, "_thinking_cue", None)
         if thinking_cue is not None:
             thinking_cue.stop()
-        text = _text_for_speech(text)
-        text = normalize_for_speech(text)
+        text = _text_for_speech(normalize_for_speech(text))
         if not text:
-            logger.debug("Skipping emoji-only TTS content")
-            return False
+            logger.debug("Skipping empty normalized TTS content")
+            return True
         segment_seconds = min(1.0, max(0.02, self._float_env("AGENT_PLAYBACK_SEGMENT_S", 0.5)))
         if self._pipeline_monitor is not None:
             # Report what the TTS client will actually send (bounded speed, live set_voice changes).
@@ -1657,7 +1655,7 @@ class AgentVoiceHandler(ConversationHandler):
         return spoke
 
     def _sway_feed(self, sr: int, pcm: NDArray[np.int16]) -> None:
-        """Hand a queued TTS segment to the antenna sway, stamped with the monotonic time it  will actually start playing (the playback cursor before this segment is booked)."""
+        """Hand a queued TTS segment to the antenna sway, stamped with the monotonic time it will actually start playing (the playback cursor before this segment is booked)."""
         sway = getattr(self, "_speech_sway", None)
         if sway is not None:
             try:

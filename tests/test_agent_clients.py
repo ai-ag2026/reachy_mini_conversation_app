@@ -75,7 +75,7 @@ async def test_hermes_voice_client_sends_no_tools_chat_completion(monkeypatch: p
 
 @pytest.mark.asyncio
 async def test_hermes_voice_client_enables_tools_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """By default (P1b) the voice client does NOT disable tools -> the gateway runs the full agent  with its api_server toolsets."""
+    """By default (P1b) the voice client does NOT disable tools -> the gateway runs the full agent with its api_server toolsets."""
     monkeypatch.setenv("TEST_AGENT_KEY", "test-secret")
     monkeypatch.delenv("AGENT_VOICE_TOOLS", raising=False)
     http = _FakeHttpClient(_FakeJsonResponse({"choices": [{"message": {"content": "ok"}}]}))
@@ -87,7 +87,7 @@ async def test_hermes_voice_client_enables_tools_by_default(monkeypatch: pytest.
 
 @pytest.mark.asyncio
 async def test_hermes_voice_client_sends_session_headers_and_only_new_turn(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Session continuity + long-term memory are opt-in via headers; the gateway  threads the conversation so the client posts only the new user turn."""
+    """Session continuity + long-term memory are opt-in via headers; the gateway threads the conversation so the client posts only the new user turn."""
     monkeypatch.setenv("TEST_AGENT_KEY", "test-secret")
     http = _FakeHttpClient(_FakeJsonResponse({"choices": [{"message": {"content": "Lampenschirm."}}]}))
     client = HermesVoiceClient(
@@ -178,6 +178,9 @@ def test_qwen_voice_tts_config_reads_bounded_speed(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("AGENT_TTS_SPEED", "9")
     assert QwenVoiceTtsConfig.from_env().speed == 2.0
 
+    monkeypatch.setenv("AGENT_TTS_SPEED", "0.1")
+    assert QwenVoiceTtsConfig.from_env().speed == 0.5
+
 
 @pytest.mark.asyncio
 async def test_qwen_voice_tts_client_requires_wav_response_format() -> None:
@@ -208,7 +211,7 @@ def _wav_bytes(*, sample_rate: int, samples: np.ndarray) -> bytes:
 
 
 def test_drain_voice_chunks_first_chunk_breaks_at_clause() -> None:
-    """First chunk ends at a clause boundary once long enough (faster first audio);  later chunks only at sentence end."""
+    """First chunk ends at a clause boundary once long enough (faster first audio); later chunks only at sentence end."""
     from reachy_mini_conversation_app.agent_clients import _drain_voice_chunks
 
     # First clause is long enough -> emit at the comma.
@@ -232,7 +235,7 @@ def test_drain_voice_chunks_short_leading_clause_not_split() -> None:
 
 
 def test_drain_voice_chunks_keeps_decimals_together() -> None:
-    """A period/comma between digits (42.5 / 1,5) must NOT split the number across chunks;  the ambiguous buffer-end punctuation is held until the next delta disambiguates."""
+    """A period/comma between digits (42.5 / 1,5) must NOT split the number across chunks; the ambiguous buffer-end punctuation is held until the next delta disambiguates."""
     from reachy_mini_conversation_app.agent_clients import _drain_voice_chunks
 
     # Buffer ends right after "42." — could be a decimal in progress -> hold, don't emit.
@@ -295,7 +298,7 @@ class _FakeStreamClient:
 
 @pytest.mark.asyncio
 async def test_ask_stream_announces_slow_tool_then_streams_answer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Phase A end-to-end: an inline `hermes.tool.progress` running event for a slow tool yields one  spoken status, the completed event is silent, and the real answer streams after."""
+    """Phase A end-to-end: an inline `hermes.tool.progress` running event for a slow tool yields one spoken status, the completed event is silent, and the real answer streams after."""
     import httpx
 
     lines = [

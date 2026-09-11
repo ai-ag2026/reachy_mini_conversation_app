@@ -130,7 +130,7 @@ async def test_agent_voice_handler_normalizes_display_text_before_tts() -> None:
 
     await handler.handle_final_transcript("Will it rain?")
 
-    assert tts_client.calls == ["There is a 20 to 35 percent chance. See the link"]
+    assert tts_client.calls == ["There is a 20 to 35 percent chance. See the link."]
 
 
 @pytest.mark.asyncio
@@ -457,3 +457,75 @@ def test_stt_language_defaults_to_english(monkeypatch, language, expected):
     else:
         monkeypatch.setenv("AGENT_STT_LANGUAGE", language)
     assert _stt_language() == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply,expected",
+    [
+        ("- item one\n- item two", "item one item two"),
+        ("1. First\n2. Second", "First Second"),
+        ("# First\n## Second", "First Second"),
+        ("😊✅", None),
+    ],
+)
+async def test_handler_normalizes_multiline_and_empty_replies(reply, expected):
+    tts = FakeAudioTtsClient(sample_rate=24000, audio=np.array([1], dtype=np.int16))
+    handler = AgentVoiceHandler(
+        ToolDependencies(reachy_mini=object(), movement_manager=_FakeMovementManager()),
+        agent_client=FakeTextAgentClient(reply=reply),
+        tts_client=tts,
+    )
+    await handler.handle_final_transcript("Question")
+    assert tts.calls == ([expected] if expected else [])
+    outputs = _drain(handler)
+    assert "speech output is having trouble" not in repr(outputs)
+    if expected is None:
+        assert not any(isinstance(output, tuple) for output in outputs)
+        assert await handler._speak_sentence(reply) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("log_content", [False, True])
+async def test_handler_pipeline_events_and_log_privacy(monkeypatch, caplog, log_content):
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from reachy_mini_conversation_app.pipeline_monitor import PipelineMonitor
+
+    monkeypatch.setenv("AGENT_PIPELINE_MONITOR_LOG_CONTENT", "1" if log_content else "0")
+    monkeypatch.setenv("AGENT_QUICKTAKE_ENABLED", "0")
+    monkeypatch.setenv("AGENT_STT_LANGUAGE", "en")
+    caplog.set_level(logging.INFO)
+    tts = FakeAudioTtsClient(sample_rate=24000, audio=np.array([1], dtype=np.int16))
+    tts.config = SimpleNamespace(model="test-model", voice="test-voice", speed=0.95)
+    client = FakeTextAgentClient(reply="unused")
+
+    async def stream(text):
+        yield "Private answer."
+
+    monkeypatch.setattr(client, "ask_stream", stream, raising=False)
+    handler = AgentVoiceHandler(
+        ToolDependencies(reachy_mini=object(), movement_manager=_FakeMovementManager()),
+        agent_client=client,
+        tts_client=tts,
+    )
+    # Record real handler calls and exercise logging without opening a server.
+    monitor = MagicMock(wraps=PipelineMonitor(port=0))
+    handler._pipeline_monitor = monitor
+    await handler.handle_final_transcript("Private question")
+    calls = monitor.emit.call_args_list
+    stt = next(call for call in calls if call.args[0] == "stt")
+    llm = next(call for call in calls if call.args[0] == "llm")
+    spoken = next(call for call in calls if call.args[0] == "tts")
+    assert stt.args == ("stt", "Private question")
+    assert stt.kwargs == {"language": "en"}
+    assert llm.args == ("llm", "Private answer.")
+    assert llm.kwargs["first_chunk"] is True
+    assert llm.kwargs["elapsed_ms"] >= 0
+    assert spoken.args == ("tts", "Private answer.")
+    assert spoken.kwargs == {"model": "test-model", "voice": "test-voice", "speed": 0.95}
+    assert ("Private question" in caplog.text) is log_content
+    assert ("Private answer." in caplog.text) is log_content
+    assert "test-model" in caplog.text
