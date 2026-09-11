@@ -1,14 +1,14 @@
 # ruff: noqa: D103
 """Gap-map Stufe 3: body-tool surface (gateway->app) + companion mode."""
-from __future__ import annotations
 
-import asyncio
+from __future__ import annotations
 import json
+import asyncio
 
 import pytest
 
-from reachy_mini_conversation_app.body_surface import ALLOWED_ACTIONS, run_body_action
 from reachy_mini_conversation_app.companion import CompanionWatcher, event_transcript
+from reachy_mini_conversation_app.body_surface import ALLOWED_ACTIONS, run_body_action
 from reachy_mini_conversation_app.reachy_platform_client import ReachyPlatformClient
 
 
@@ -20,9 +20,7 @@ async def test_body_surface_allowlist_and_mapping(monkeypatch):
         calls.append((name, args))
         return {"status": "queued"}
 
-    monkeypatch.setattr(
-        "reachy_mini_conversation_app.tools.core_tools.dispatch_tool_call_obj", fake_dispatch
-    )
+    monkeypatch.setattr("reachy_mini_conversation_app.tools.core_tools.dispatch_tool_call_obj", fake_dispatch)
 
     class _MM:
         cleared = False
@@ -60,8 +58,7 @@ async def test_body_surface_allowlist_and_mapping(monkeypatch):
 
 
 def test_client_tool_call_roundtrip():
-    """A gateway tool_call frame must be executed and answered with tool_result — independent
-    of turn routing (the frame carries no turn_id)."""
+    """A gateway tool_call frame must be executed and answered with tool_result — independent  of turn routing (the frame carries no turn_id)."""
 
     class _WS:
         def __init__(self, frames):
@@ -90,8 +87,7 @@ def test_client_tool_call_roundtrip():
             return {"status": "queued", "emotion": params.get("emotion")}
 
         c.on_tool_call = on_tool
-        ws = _WS([{"type": "tool_call", "tool_call_id": "t1",
-                   "action": "emote", "params": {"emotion": "happy"}}])
+        ws = _WS([{"type": "tool_call", "tool_call_id": "t1", "action": "emote", "params": {"emotion": "happy"}}])
         c._ws = ws
         await c._ensure_session()
         await asyncio.sleep(0.03)  # let the tool task run + send while the reader is alive
@@ -106,8 +102,10 @@ def test_client_tool_call_roundtrip():
 
 
 def test_companion_event_transcript_licenses_silence():
-    t = event_transcript("Testereignis")
-    assert "KEIN Nutzer-Turn" in t and "leerem Text" in t
+    t = event_transcript("Test event")
+    assert "Test event" in t
+    assert "NOT a user turn" in t  # framed as an event, not something the user said
+    assert "return completely empty text" in t  # silence is explicitly licensed
 
 
 @pytest.mark.asyncio
@@ -130,15 +128,15 @@ async def test_companion_watcher_only_fires_when_enabled(monkeypatch):
     monkeypatch.setenv("AGENT_COMPANION", "1")
     await asyncio.sleep(0.15)  # two sustained speech polls -> one event (global cooldown after)
     w.stop()
-    assert len(fired) == 1 and "gesprochen" in fired[0]
+    assert len(fired) == 1 and "nobody addressed you directly" in fired[0]
 
 
 @pytest.mark.asyncio
 async def test_run_body_action_reaches_real_dispatcher(monkeypatch):
-    """Regression: body_surface must call the dispatcher with the (name, args, deps) shape the
-    real core_tools dispatcher expects — a stub with the wrong argument order can stay green
-    while reachy_body emote/dance/look die with a TypeError at runtime. Route emote through the
-    REAL core_tools dispatcher."""
+    """Regression: body_surface must call the dispatcher with the (name, args, deps) shape the real core_tools dispatcher expects — a stub with the wrong argument order can stay green while reachy_body emote/dance/look die with a TypeError at runtime.
+
+    Route emote through the REAL core_tools dispatcher.
+    """
     import reachy_mini_conversation_app.tools.core_tools as core_tools
 
     core_tools.initialize_tools()

@@ -6,34 +6,31 @@ import time
 import asyncio
 import inspect
 import logging
-from typing import Any, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, cast
 from dataclasses import dataclass
+from collections.abc import Callable, Awaitable, AsyncGenerator
 
 import numpy as np
-
-
-logger = logging.getLogger(__name__)
 from fastrtc import AdditionalOutputs, wait_for_item
 from numpy.typing import NDArray
 
-from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
-from reachy_mini_conversation_app.pipeline_monitor import get_pipeline_monitor
 from reachy_mini_conversation_app.speech_text import normalize_for_speech
+from reachy_mini_conversation_app.pipeline_monitor import get_pipeline_monitor
+from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
 from reachy_mini_conversation_app.conversation_handler import AudioFrame, HandlerOutput, ConversationHandler
+
+
+if TYPE_CHECKING:
+    from reachy_agent.voice.stt_frontend import AgentSttFrontend
+
+logger = logging.getLogger(__name__)
 
 
 MaybeText: TypeAlias = str | object
 MaybeAudioFrame: TypeAlias = AudioFrame | object
 
 
-_EMOJI_RE = re.compile(
-    "["
-    "\U0001F1E6-\U0001F1FF"
-    "\U0001F300-\U0001FAFF"
-    "\u2600-\u26FF"
-    "\u2700-\u27BF"
-    "]"
-)
+_EMOJI_RE = re.compile("[\U0001f1e6-\U0001f1ff\U0001f300-\U0001faff\u2600-\u26ff\u2700-\u27bf]")
 _EMOJI_JOINERS_RE = re.compile(r"[\u200d\ufe0e\ufe0f\u20e3]")
 
 
@@ -42,6 +39,14 @@ def _text_for_speech(text: str) -> str:
     clean = _EMOJI_RE.sub(" ", str(text or ""))
     clean = _EMOJI_JOINERS_RE.sub("", clean)
     return " ".join(clean.split()).strip()
+
+
+def _stt_language() -> str:
+    """Spoken language for the local STT front-end: English unless AGENT_STT_LANGUAGE says otherwise ("auto" defers to the model's own detection).
+
+    Passed explicitly so the app's default does not depend on the reachy_agent runtime's own fallback.
+    """
+    return os.getenv("AGENT_STT_LANGUAGE", "").strip() or "en"
 
 
 class TextAgentClient(Protocol):
@@ -119,21 +124,21 @@ class AgentVoiceHandler(ConversationHandler):
         self._turn_active = False
         # Barge-in (full-duplex): AGENT_BARGE_IN=0 falls back to the proven hard half-duplex mute.
         self._barge_enabled = os.getenv("AGENT_BARGE_IN", "1").strip().lower() not in ("0", "false", "no", "off")
-        self._barge_stt = None          # lazy second Silero front-end, fed only during playback
+        self._barge_stt = None  # lazy second Silero front-end, fed only during playback
         self._barge_event = asyncio.Event()  # set on speech ONSET over playback -> pause AGENT now
         self._barge_transcript: str | None = None  # the full interrupt utterance once it endpoints
         self._pending_barge: str | None = None  # a committed interrupt -> becomes the next turn
-        self._turn_task: asyncio.Task | None = None  # current turn task — the watchdog cancels it on stall
-        self._turn_seq = 0              # generation counter: a stale turn's finally must not clobber a newer turn
+        self._turn_task: asyncio.Task[Any] | None = None  # current turn task — the watchdog cancels it on stall
+        self._turn_seq = 0  # generation counter: a stale turn's finally must not clobber a newer turn
         # Stage 2 — preemptive turn-start (AGENT_PREEMPT_TURN=1, stream STT only): when the STT partial
         # is stable mid-speech, start generating on it early so the cloud TTFT overlaps the speech tail
         # + endpoint pause. The speculative turn HOLDS its audio behind _spec_gate until the real
         # endpoint confirms the transcript (confirm ~450ms << TTFT ~3-6s, so no wrong word is ever
         # spoken); on mismatch it is cancelled + a fresh turn runs. OFF by default.
-        self._spec_task: asyncio.Task | None = None
+        self._spec_task: asyncio.Task[Any] | None = None
         self._spec_partial: str | None = None
         self._spec_gate: asyncio.Event | None = None  # set = confirmed, release held audio
-        self._spec_seq = 0             # tentative turn seq the speculative task adopts if confirmed
+        self._spec_seq = 0  # tentative turn seq the speculative task adopts if confirmed
         self._classify_inflight = False  # single-flight: at most one barge classify at a time
         # Playback clock: monotonic cursor of when the last queued audio segment will finish playing.
         # _speaking_until derives from it (audit 2026-07-02: the old per-segment "now + const" estimate
@@ -143,7 +148,7 @@ class AgentVoiceHandler(ConversationHandler):
         # ALSA max). Non-pausing barge-in keeps AGENT at full volume while the user speaks (Operator's
         # preferred behavior — no ducking); the awake HW AEC keeps the user's parallel transcript clean.
         self._output_gain = float(os.getenv("AGENT_OUTPUT_GAIN", "0.9"))
-        self._last_progress = 0.0       # monotonic of the last queued audio / barge decision (stall watchdog)
+        self._last_progress = 0.0  # monotonic of the last queued audio / barge decision (stall watchdog)
         # Barge only once AGENT is actually SPEAKING: during the silent 3-6s think phase there is nothing
         # to interrupt, and a user re-prompt ("hörst du mich?") would otherwise commit-barge and cancel
         # the turn before any audio — an endless no-answer loop when the quick-take ack is off
@@ -162,10 +167,11 @@ class AgentVoiceHandler(ConversationHandler):
             _set_proactive(self._speak_proactive)
 
     async def _speak_proactive(self, text: str) -> None:
-        """Speak a proactively-delivered message (background result / cron / send_message)
-        in a safe half-duplex gap. Mutually exclusive with interactive turns via
-        ``_turn_lock``; keeps ``_speaking_until`` ahead so receive() hard-mutes the mic
-        while speaking (no barge target). Drops the message if no gap opens in time.
+        """Speak a proactively-delivered message (background result / cron / send_message) in a safe half-duplex gap.
+
+        Mutually exclusive with interactive turns via ``_turn_lock``; keeps ``_speaking_until`` ahead so
+        receive() hard-mutes the mic while speaking (no barge target). Drops the message if no gap opens in
+        time.
         """
         text = (text or "").strip()
         if not text or self._closed:
@@ -174,7 +180,7 @@ class AgentVoiceHandler(ConversationHandler):
         try:
             await asyncio.wait_for(self._turn_lock.acquire(), timeout=acquire_s)
         except asyncio.TimeoutError:
-            logger.info("[proactive] no half-duplex gap within %.0fs — dropping: %s", acquire_s, text[:60])
+            logger.info("[proactive] no half-duplex gap within %.0fs — dropping %d chars", acquire_s, len(text))
             return
         try:
             if self._closed:
@@ -196,47 +202,54 @@ class AgentVoiceHandler(ConversationHandler):
         finally:
             self._turn_lock.release()
 
-    def _ensure_stt(self):
+    def _ensure_stt(self) -> AgentSttFrontend:
         """Lazily build the Silero+Parakeet front-end used to transcribe the live mic in receive().
+
         Firmware AEC keeps AGENT's own playback out of the mic, so this is the in-receive STT that the
         no-op receive() lacked (the app's agent backend now actually hears the user).
         """
         if self._stt is None:
             from reachy_agent.voice.stt_frontend import AgentSttFrontend
+
             self._stt = AgentSttFrontend(
                 stt_remote_url=os.getenv("AGENT_STT_BASE_URL"),
                 stt_model=os.getenv("AGENT_STT_MODEL", "parakeet"),
                 pause_ms=int(os.getenv("AGENT_PAUSE_MS", "550")),
                 vad_threshold=float(os.getenv("AGENT_VAD_THRESHOLD", "0.4")),
+                language=_stt_language(),
             )
         return self._stt
 
-    def _ensure_barge_stt(self):
-        """Second Silero+Parakeet front-end used ONLY while AGENT is speaking, to detect a real human
-        interrupt over the playback. Tuned for fast onset (short pause) — the goal is to react the
-        instant the user starts, not to wait for a full sentence; the clean tail (after AGENT pauses)
-        carries the actual instruction.
+    def _ensure_barge_stt(self) -> AgentSttFrontend:
+        """Second Silero+Parakeet front-end used ONLY while AGENT is speaking, to detect a real human interrupt over the playback.
+
+        Tuned for fast onset (short pause) — the goal is to react the instant the user starts, not to wait for
+        a full sentence; the clean tail (after AGENT pauses) carries the actual instruction.
         """
         if self._barge_stt is None:
             from reachy_agent.voice.stt_frontend import AgentSttFrontend
+
             self._barge_stt = AgentSttFrontend(
                 stt_remote_url=os.getenv("AGENT_STT_BASE_URL"),
                 stt_model=os.getenv("AGENT_STT_MODEL", "parakeet"),
                 pause_ms=int(os.getenv("AGENT_BARGE_PAUSE_MS", "350")),
                 vad_threshold=float(os.getenv("AGENT_BARGE_THRESHOLD", "0.5")),
+                language=_stt_language(),
             )
         return self._barge_stt
 
-    def _gain(self, arr: np.ndarray) -> np.ndarray:
+    def _gain(self, arr: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
         """Apply output loudness to a PCM segment (clipped to int16)."""
         if self._output_gain == 1.0:
             return arr
         return np.clip(arr.astype(np.float32) * self._output_gain, -32768, 32767).astype(np.int16)
 
     def _status_chirp(self, name: str) -> None:
-        """Queue a short non-verbal astromech status cue (AGENT_CHIRPS=1). Best-effort — never breaks
-        a turn. Mutes the mic for the cue's duration (half-duplex) but does NOT set _turn_spoke: a cue
-        is not spoken content, so barge stays suppressed until the real answer starts."""
+        """Queue a short non-verbal astromech status cue (AGENT_CHIRPS=1).
+
+        Best-effort — never breaks a turn. Mutes the mic for the cue's duration (half-duplex) but does NOT set
+        _turn_spoke: a cue is not spoken content, so barge stays suppressed until the real answer starts.
+        """
         if not self._env_on("AGENT_CHIRPS", "0"):
             return
         try:
@@ -250,14 +263,12 @@ class AgentVoiceHandler(ConversationHandler):
             if self._env_on("AGENT_CHIRP_VIA_DAEMON", "1"):
                 from reachy_mini_conversation_app.liveliness import CHIRP_FILE_PREFIX, play_daemon_sound
 
-                t = asyncio.create_task(
-                    asyncio.to_thread(play_daemon_sound, f"{CHIRP_FILE_PREFIX}{name}.wav")
-                )
-                self._misc_tasks = getattr(self, "_misc_tasks", set())
+                t = asyncio.create_task(asyncio.to_thread(play_daemon_sound, f"{CHIRP_FILE_PREFIX}{name}.wav"))
+                self._misc_tasks: set[asyncio.Task[Any]] = getattr(self, "_misc_tasks", set())
                 self._misc_tasks.add(t)
                 t.add_done_callback(self._misc_tasks.discard)
 
-                def _fallback(task: asyncio.Task, _sr=sr, _pcm=pcm) -> None:
+                def _fallback(task: asyncio.Task[Any], _sr: int = sr, _pcm: NDArray[np.int16] = pcm) -> None:
                     try:
                         if task.cancelled() or task.result():
                             return
@@ -315,21 +326,23 @@ class AgentVoiceHandler(ConversationHandler):
     def _env_on(name: str, default: str = "1") -> bool:
         return os.getenv(name, default).strip().lower() not in ("0", "false", "no", "off")
 
-    def get_toggles(self) -> dict:
-        """Current state of the dashboard live switches. Most are env-backed and read per turn, so a
-        change takes effect on the next turn with no restart; mic is a handler-level mute.
+    def get_toggles(self) -> dict[str, Any]:
+        """Return the current state of the dashboard live switches.
+
+        Most are env-backed and read per turn, so a change takes effect on the next turn with no restart; mic
+        is a handler-level mute.
         """
         return {
-            "tools": self._env_on("AGENT_VOICE_TOOLS"),          # full AGENT agent tools
-            "vision": self._env_on("AGENT_VISION_ENABLED"),       # camera vision (gemma/native)
+            "tools": self._env_on("AGENT_VOICE_TOOLS"),  # full AGENT agent tools
+            "vision": self._env_on("AGENT_VISION_ENABLED"),  # camera vision (gemma/native)
             "person_id": not self._env_on("AGENT_VISION_BLOCK_PERSON_ID", "0"),  # person recognition
-            "mic": not self._mic_muted,                          # microphone listening
-            "companion": self._env_on("AGENT_COMPANION", "0"),    # proactive perception mode
-            "idle_actions": self._env_on("AGENT_IDLE_ACTIONS"),   # idle emotes/dances/looks
-            "speech_sway": self._env_on("AGENT_SPEECH_SWAY"),     # antenna sway while speaking
+            "mic": not self._mic_muted,  # microphone listening
+            "companion": self._env_on("AGENT_COMPANION", "0"),  # proactive perception mode
+            "idle_actions": self._env_on("AGENT_IDLE_ACTIONS"),  # idle emotes/dances/looks
+            "speech_sway": self._env_on("AGENT_SPEECH_SWAY"),  # antenna sway while speaking
         }
 
-    def set_toggle(self, name: str, on: bool) -> dict:
+    def set_toggle(self, name: str, on: bool) -> dict[str, Any]:
         """Flip a live switch and return the new full toggle state."""
         on = bool(on)
         if name == "tools":
@@ -384,8 +397,8 @@ class AgentVoiceHandler(ConversationHandler):
         except ValueError:
             return default
 
-    def get_settings(self) -> dict:
-        """Current values of the live runtime knobs (latency / volume), for the dashboard panel."""
+    def get_settings(self) -> dict[str, Any]:
+        """Return the current values of the live runtime knobs (latency / volume), for the dashboard panel."""
         return {
             "reasoning_effort": os.getenv("AGENT_VOICE_REASONING_EFFORT", "minimal"),
             "quicktake_delay_s": self._float_env("AGENT_QUICKTAKE_DELAY_S", 0.8),
@@ -395,9 +408,10 @@ class AgentVoiceHandler(ConversationHandler):
             "tool_status": self._env_on("AGENT_TOOL_STATUS_ENABLED"),
         }
 
-    def set_setting(self, name: str, value: object) -> dict:
-        """Set one live runtime knob (validated); returns the new full settings state. Raises KeyError
-        for an unknown name and ValueError for a bad value (the console maps these to 4xx).
+    def set_setting(self, name: str, value: Any) -> dict[str, Any]:
+        """Set one live runtime knob (validated); returns the new full settings state.
+
+        Raises KeyError for an unknown name and ValueError for a bad value (the console maps these to 4xx).
         """
         if name == "reasoning_effort":
             v = str(value).strip().lower()
@@ -410,7 +424,7 @@ class AgentVoiceHandler(ConversationHandler):
             os.environ["AGENT_VOICE_FIRST_AUDIO_BUDGET_S"] = str(max(0.0, min(120.0, float(value))))
         elif name == "output_gain":
             gain = max(0.1, min(3.0, float(value)))
-            self._output_gain = gain               # live: applied to all queued PCM
+            self._output_gain = gain  # live: applied to all queued PCM
             os.environ["AGENT_OUTPUT_GAIN"] = str(gain)
         elif name in ("quicktake", "tool_status"):
             os.environ[self.SETTING_ENV[name]] = "1" if self._truthy(value) else "0"
@@ -451,6 +465,7 @@ class AgentVoiceHandler(ConversationHandler):
                 await start()
             except Exception:
                 logger.warning("AGENT client start failed", exc_info=True)
+
         # Pre-warm the Silero+Parakeet front-ends off the event loop so the first mic frame (and
         # the first barge frame while AGENT speaks) doesn't stall the loop on the ONNX model load
         # (audit 2026-07-02). Best-effort — receive() still lazily builds them if this is skipped.
@@ -460,6 +475,7 @@ class AgentVoiceHandler(ConversationHandler):
                 await asyncio.to_thread(self._ensure_barge_stt)
             except Exception:
                 logger.debug("STT pre-warm skipped", exc_info=True)
+
         self._stt_prewarm_task = asyncio.create_task(_prewarm_stt())
         # Liveliness (gap-map Stufe 1): idle actions + daemon chirp library + emotion sounds.
         try:
@@ -515,8 +531,7 @@ class AgentVoiceHandler(ConversationHandler):
         await self._closed_event.wait()
 
     def _play_wav_path(self, path: str) -> None:
-        """Queue a wav file (e.g. an emotion's bundled sound) on the spoken-audio path —
-        respects the half-duplex mute and books the playback clock (speech=False)."""
+        """Queue a wav file (e.g. an emotion's bundled sound) on the spoken-audio path —  respects the half-duplex mute and books the playback clock (speech=False)."""
         try:
             from reachy_mini_conversation_app.liveliness import wav_file_to_pcm
 
@@ -528,7 +543,7 @@ class AgentVoiceHandler(ConversationHandler):
                 # path as the chirps). Trade-off: duration unknown without decoding, so no
                 # playback-clock booking — firmware AEC covers self-hearing, as with daemon-
                 # side chirps.
-                from reachy_mini_conversation_app.liveliness import ensure_daemon_sound, play_daemon_sound
+                from reachy_mini_conversation_app.liveliness import play_daemon_sound, ensure_daemon_sound
 
                 def _daemon_fallback(p: str = str(path)) -> None:
                     name = ensure_daemon_sound(p)
@@ -546,15 +561,14 @@ class AgentVoiceHandler(ConversationHandler):
         except Exception:
             logger.debug("emotion sound playback failed", exc_info=True)
 
-    async def _on_body_tool(self, action: str, params: dict) -> dict:
+    async def _on_body_tool(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """Gateway-requested body action (reachy_body tool) — bounded via body_surface allowlist."""
         from reachy_mini_conversation_app.body_surface import run_body_action
 
         return await run_body_action(self.deps, action, params, chirp=self._status_chirp)
 
     def _begin_event_turn(self, text: str) -> bool:
-        """Start a turn from a LOCAL event (companion mode) — same single-flight discipline as a
-        user transcript; refused while any turn is active."""
+        """Start a turn from a LOCAL event (companion mode) — same single-flight discipline as a  user transcript; refused while any turn is active."""
         if self._turn_active or self._closed:
             return False
         self._turn_active = True
@@ -582,16 +596,16 @@ class AgentVoiceHandler(ConversationHandler):
             from reachy_mini_conversation_app.companion import CompanionWatcher, event_transcript
 
             if CompanionWatcher.enabled():
-                self._begin_event_turn(event_transcript(
-                    "You were just bumped or lifted (IMU)."
-                ))
+                self._begin_event_turn(event_transcript("You were just bumped or lifted (IMU)."))
         except Exception:
             logger.debug("IMU reaction failed", exc_info=True)
 
     def _sync_listening(self, listening: bool) -> None:
-        """Mirror 'user is speaking' onto the body: antennas freeze + breathing pauses while
-        listening (MovementManager.set_listening, debounced there). The info always existed in
-        the handler (Silero in_speech) — it was just never forwarded (gap-map Stufe 1)."""
+        """Mirror 'user is speaking' onto the body: antennas freeze + breathing pauses while listening (MovementManager.set_listening, debounced there).
+
+        The info always existed in the handler (Silero in_speech) — it was just never forwarded (gap-map Stufe
+        1).
+        """
         if listening == getattr(self, "_listening_state", False):
             return
         self._listening_state = listening
@@ -675,11 +689,17 @@ class AgentVoiceHandler(ConversationHandler):
         # start-based timeout would falsely kill it mid-answer. A genuinely wedged turn queues nothing.
         # Threshold: never below the dashboard-settable first-audio budget (+grace) — a 120s budget
         # with a fixed 30s stall would false-fire on every silent long think (audit 2026-07-02).
-        stall_s = max(self._float_env("AGENT_TURN_STALL_S", 30.0),
-                      self._float_env("AGENT_VOICE_FIRST_AUDIO_BUDGET_S", 20.0) + 15.0)
+        stall_s = max(
+            self._float_env("AGENT_TURN_STALL_S", 30.0),
+            self._float_env("AGENT_VOICE_FIRST_AUDIO_BUDGET_S", 20.0) + 15.0,
+        )
         if self._turn_active and self._last_progress and (now - self._last_progress) > stall_s:
-            logger.warning("AGENT stall watchdog: no turn progress for %.0fs (barge_event=%s, pending=%r) -> cancel turn",
-                           now - self._last_progress, self._barge_event.is_set(), self._pending_barge)
+            logger.warning(
+                "AGENT stall watchdog: no turn progress for %.0fs (barge_event=%s, pending=%r) -> cancel turn",
+                now - self._last_progress,
+                self._barge_event.is_set(),
+                self._pending_barge,
+            )
             # Actually CANCEL the wedged turn task — just resetting flags left it running and speaking,
             # while its finally later clobbered the next turn's _turn_active (audit 2026-07-02).
             task = self._turn_task
@@ -741,8 +761,12 @@ class AgentVoiceHandler(ConversationHandler):
                 fr = raw0.reshape(-1).astype(np.float64)
                 logger.info(
                     "AGENT raw frame#%d sr=%s shape=%s dtype=%s min=%.4f max=%.4f std=%.4f",
-                    self._rx_frames, sr, raw0.shape, raw0.dtype,
-                    float(fr.min()) if fr.size else 0, float(fr.max()) if fr.size else 0,
+                    self._rx_frames,
+                    sr,
+                    raw0.shape,
+                    raw0.dtype,
+                    float(fr.min()) if fr.size else 0,
+                    float(fr.max()) if fr.size else 0,
                     float(fr.std()) if fr.size else 0,
                 )
             # Daemon mic frames are stereo float32 (shape (N, 2)); collapse to mono by averaging
@@ -773,14 +797,24 @@ class AgentVoiceHandler(ConversationHandler):
         # A speculation whose utterance endpointed to NOTHING (noise discard / empty STT) is never
         # adopted or discarded by the transcript path — it held _turn_lock at the gate and proactive
         # deliveries ran into their timeout until the next real transcript (review 2026-07-02, P3).
-        if (self._spec_task is not None and not transcript and not self._turn_active
-                and frontend is not None and not frontend.in_speech):
+        if (
+            self._spec_task is not None
+            and not transcript
+            and not self._turn_active
+            and frontend is not None
+            and not frontend.in_speech
+        ):
             logger.info("AGENT preempt: utterance endpointed empty -> discarding speculation")
             await self._discard_speculative()
         # Preemptive turn-start (Stage 2): while still speaking, if the STT partial is stable, begin
         # generating on it so the cloud TTFT overlaps the endpoint pause. Held behind _spec_gate.
-        if (not transcript and not self._turn_active and self._spec_task is None
-                and frontend is not None and self._env_on("AGENT_PREEMPT_TURN", "0")):
+        if (
+            not transcript
+            and not self._turn_active
+            and self._spec_task is None
+            and frontend is not None
+            and self._env_on("AGENT_PREEMPT_TURN", "0")
+        ):
             sp = frontend.stable_partial(
                 min_chars=int(self._float_env("AGENT_PREEMPT_MIN_CHARS", 15)),
                 stable_frames=int(self._float_env("AGENT_PREEMPT_STABLE_FRAMES", 6)),
@@ -788,12 +822,11 @@ class AgentVoiceHandler(ConversationHandler):
             if sp:
                 self._launch_speculative(sp)
         if transcript:
-            logger.info("AGENT in-receive transcript: %r", transcript)
-            if (self._spec_task is not None and not self._spec_task.done()
-                    and self._spec_matches(transcript)):
+            logger.info("AGENT in-receive transcript: %d chars", len(transcript))
+            if self._spec_task is not None and not self._spec_task.done() and self._spec_matches(transcript):
                 # ADOPT: the speculative turn's input matches the final -> it IS this turn; release
                 # its held audio and don't re-generate (the TTFT head start is the win).
-                logger.info("AGENT preempt: ADOPT speculative (final==partial %r)", transcript)
+                logger.info("AGENT preempt: ADOPT speculative (final==partial, %d chars)", len(transcript))
                 self._turn_active = True
                 self._turn_seq = self._spec_seq
                 self._last_progress = time.monotonic()
@@ -815,15 +848,16 @@ class AgentVoiceHandler(ConversationHandler):
                 self._turn_task = asyncio.create_task(self.handle_final_transcript(transcript))
 
     @staticmethod
-    def _norm_text(s: str) -> str:
+    def _norm_text(s: str | None) -> str:
         import re
 
         return re.sub(r"[^\wäöüß]+", " ", (s or "").lower()).strip()
 
     def _spec_matches(self, final: str) -> bool:
-        """Adopt the speculative turn ONLY if the final transcript equals the partial it started on
-        (normalized) — i.e. the stable partial WAS the whole utterance and the trailing was just the
-        endpoint pause. If the user added words, the speculation was on incomplete input -> discard."""
+        """Adopt the speculative turn ONLY if the final transcript equals the partial it started on (normalized) — i.e. the stable partial WAS the whole utterance and the trailing was just the endpoint pause.
+
+        If the user added words, the speculation was on incomplete input -> discard.
+        """
         return bool(self._spec_partial) and self._norm_text(final) == self._norm_text(self._spec_partial)
 
     def _launch_speculative(self, partial: str) -> None:
@@ -835,7 +869,7 @@ class AgentVoiceHandler(ConversationHandler):
         # fresh turn (review 2026-07-02 round 2, P2).
         self._spec_adopted = {"v": False}
         self._spec_seq = self._turn_seq + 1
-        logger.info("AGENT preempt: speculating on stable partial %r", partial)
+        logger.info("AGENT preempt: speculating on stable partial (%d chars)", len(partial))
         self._spec_task = asyncio.create_task(
             self._speculative_turn(partial, self._spec_seq, self._spec_gate, self._spec_adopted)
         )
@@ -858,18 +892,15 @@ class AgentVoiceHandler(ConversationHandler):
         if gate is not None:
             gate.set()
 
-    async def _speculative_turn(
-        self, partial: str, my_seq: int, gate: asyncio.Event, adopted: dict
-    ) -> None:
-        """Generate the reply for a stable partial early (TTFT overlaps the endpoint pause), holding
-        every spoken sentence behind ``gate`` until the real endpoint confirms (adopt) — confirm
-        (~450ms) arrives well before the first token (~3-6s), so no wrong word is ever spoken. On
-        adopt this task becomes the turn; on discard it is cancelled before the gate opens."""
+    async def _speculative_turn(self, partial: str, my_seq: int, gate: asyncio.Event, adopted: dict[str, Any]) -> None:
+        """Generate the reply for a stable partial early (TTFT overlaps the endpoint pause), holding every spoken sentence behind ``gate`` until the real endpoint confirms (adopt) — confirm (~450ms) arrives well before the first token (~3-6s), so no wrong word is ever spoken.
+
+        On adopt this task becomes the turn; on discard it is cancelled before the gate opens.
+        """
         ask_stream = getattr(self.agent_client, "ask_stream", None)
         if ask_stream is None:
             return
         parts: list[str] = []
-        spoke_any = False
         try:
             async with self._turn_lock:
                 if self._closed:
@@ -884,8 +915,7 @@ class AgentVoiceHandler(ConversationHandler):
                     if self._closed or self._barge_event.is_set():
                         break
                     parts.append(sentence)
-                    if await self._speak_sentence(sentence):
-                        spoke_any = True
+                    await self._speak_sentence(sentence)
                     if self._barge_event.is_set():
                         if await self._maybe_platform_barge():
                             continue
@@ -915,11 +945,12 @@ class AgentVoiceHandler(ConversationHandler):
                     self._turn_active = False
 
     async def _feed_barge(self, frame: AudioFrame) -> None:
-        """Feed one frame to the barge VAD while AGENT is talking. NON-PAUSING: AGENT keeps speaking; we
-        do NOT react to onset. Only when a FULL user utterance endpoints do we classify it (off-thread)
-        and decide ignore / stop / commit — so a backchannel never interrupts and a real interrupt
-        carries its whole instruction. Awake the HW AEC keeps AGENT's own voice near the floor, so it
-        neither self-triggers Silero nor endpoints as an utterance.
+        """Feed one frame to the barge VAD while AGENT is talking.
+
+        NON-PAUSING: AGENT keeps speaking; we do NOT react to onset. Only when a FULL user utterance endpoints
+        do we classify it (off-thread) and decide ignore / stop / commit — so a backchannel never interrupts
+        and a real interrupt carries its whole instruction. Awake the HW AEC keeps AGENT's own voice near the
+        floor, so it neither self-triggers Silero nor endpoints as an utterance.
         """
         try:
             sr, samples = frame
@@ -955,6 +986,7 @@ class AgentVoiceHandler(ConversationHandler):
             # "STOPP" was dropped by single-flight while the gate call hung).
             try:
                 from reachy_agent.voice.semantic_gate import is_bare_stop
+
                 if is_bare_stop(txt):
                     logger.info("AGENT barge: bare STOP during in-flight classify -> stop now")
                     self._barge_event.set()
@@ -963,15 +995,15 @@ class AgentVoiceHandler(ConversationHandler):
             except Exception:
                 pass
             return
-        logger.info("AGENT barge candidate (full utterance%s): %r", " — silent phase" if silent_phase else "", txt)
+        logger.info(
+            "AGENT barge candidate (full utterance%s): %d chars", " — silent phase" if silent_phase else "", len(txt)
+        )
         self._classify_inflight = True  # single-flight: don't pile up classify threads/LLM calls
         asyncio.create_task(self._classify_and_act(txt, my_seq=self._turn_seq, silent_phase=silent_phase))
 
     async def _classify_and_act(self, transcript: str, my_seq: int | None = None, silent_phase: bool = False) -> None:
-        """Classify a completed user utterance heard while AGENT was talking, then act:
-        ignore -> AGENT keeps talking; stop -> stop AGENT, forward nothing; commit -> stop AGENT and
-        forward the WHOLE transcript as the next turn. Runs concurrently with the speak loop; the LLM
-        gate runs off the event loop. Stopping = set _barge_event (the speak loop bails) + drain queue.
+        """Classify a completed user utterance heard while AGENT was talking, then act:  ignore -> AGENT keeps talking; stop -> stop AGENT, forward nothing; commit -> stop AGENT and forward the WHOLE transcript as the next turn. Runs concurrently with the speak loop; the LLM gate runs off the event loop. Stopping = set _barge_event (the speak loop bails) + drain queue.
+
         Always clears the single-flight flag (any path) so candidates can fire again.
         """
         try:
@@ -979,6 +1011,7 @@ class AgentVoiceHandler(ConversationHandler):
                 return
             try:
                 from reachy_agent.voice.semantic_gate import classify_interrupt
+
                 # Short gate timeout: the library default of 20s makes AGENT un-interruptible for that
                 # long when the 9B gate hangs (cold model load). On timeout the safe default (commit)
                 # applies anyway, so waiting longer buys nothing (audit 2026-07-02).
@@ -988,7 +1021,9 @@ class AgentVoiceHandler(ConversationHandler):
                 logger.warning("AGENT barge classify failed -> commit: %r", exc)
                 decision = "commit"
             self._last_progress = time.monotonic()  # a decision is progress (don't let the watchdog fire)
-            logger.info("AGENT barge %r -> %s%s", transcript, decision, " (silent phase)" if silent_phase else "")
+            logger.info(
+                "AGENT barge (%d chars) -> %s%s", len(transcript), decision, " (silent phase)" if silent_phase else ""
+            )
             if decision == "ignore":
                 return  # backchannel / not directed -> AGENT keeps talking at full volume
             # Generation guard: the gate can take seconds (5s timeout => default commit). If the
@@ -1033,32 +1068,30 @@ class AgentVoiceHandler(ConversationHandler):
             self._classify_inflight = False
 
     async def _dispatch_barge_if_set(self) -> None:
-        """Platform-interrupt dispatch, guarded: if the speak loop already handled the barge
-        (event cleared), do nothing — a second interrupt would /stop the new turn."""
+        """Platform-interrupt dispatch, guarded: if the speak loop already handled the barge  (event cleared), do nothing — a second interrupt would /stop the new turn."""
         if self._barge_event.is_set() and self._turn_active and not self._closed:
             try:
                 await self._maybe_platform_barge()
             except Exception:
                 logger.warning("AGENT barge: deferred interrupt dispatch failed", exc_info=True)
 
-    async def _safe_interrupt(self, itr) -> None:
+    async def _safe_interrupt(self, itr: Callable[[str | None], Awaitable[None]]) -> None:
         try:
             await itr(None)
         except Exception:
             logger.warning("AGENT watchdog: interrupt dispatch failed", exc_info=True)
 
     def _note_turn_progress(self) -> None:
-        """Inbound-frame progress hook (set on the platform client): ANY routed turn frame —
-        say, typing, turn_end — proves the gateway is alive and working. Without it, a >35s
-        silent tool phase produced no 'progress' and the stall watchdog killed a legitimate
-        turn mid-answer (review 2026-07-02 round 2, P1-4)."""
+        """Inbound-frame progress hook (set on the platform client): ANY routed turn frame — say, typing, turn_end — proves the gateway is alive and working.
+
+        Without it, a >35s silent tool phase produced no 'progress' and the stall watchdog killed a legitimate
+        turn mid-answer (review 2026-07-02 round 2, P1-4).
+        """
         if self._turn_active:
             self._last_progress = time.monotonic()
 
     async def _maybe_platform_barge(self) -> bool:
-        """Platform transport barge-in: interrupt the gateway's turn IN PLACE instead
-        of tearing down the ask_stream and respawning (which, over a multiplexed ws,
-        would let the cancelled turn's stragglers be spoken proactively).
+        """Platform transport barge-in: interrupt the gateway's turn IN PLACE instead  of tearing down the ask_stream and respawning (which, over a multiplexed ws, would let the cancelled turn's stragglers be spoken proactively).
 
         Returns True to CONTINUE the same ask_stream — a committed command makes the
         gateway cancel the current turn and answer the new one, and the client re-locks
@@ -1082,23 +1115,34 @@ class AgentVoiceHandler(ConversationHandler):
     # "AGENT Work mode" safe toolset: api_server minus the tools that can run or schedule arbitrary
     # code/commands/file ops, directly OR indirectly. Dropped: terminal, code_execution, file
     # (direct); delegation, cronjob (indirect — a spawned agent / scheduled job could use the above).
-    _WORK_MODE_TOOLSETS = ("browser,clarify,homeassistant,image_gen,memory,"
-                           "messaging,moa,rl,session_search,skills,todo,tts,vision,web,workflow")
+    _WORK_MODE_TOOLSETS = (
+        "browser,clarify,homeassistant,image_gen,memory,"
+        "messaging,moa,rl,session_search,skills,todo,tts,vision,web,workflow"
+    )
 
     async def apply_personality(self, profile: str | None) -> str:
-        """AGENT stays the brain, but a profile can switch the GATEWAY toolset policy. Work mode drops
-        the dangerous tools (terminal/code_execution/file); any other profile = full AGENT tools. Takes
-        effect on the next turn (env read per turn), no restart.
+        """AGENT stays the brain, but a profile can switch the GATEWAY toolset policy.
+
+        Work mode drops the dangerous tools (terminal/code_execution/file); any other profile = full AGENT
+        tools. Takes effect on the next turn (env read per turn), no restart.
         """
         self.second_assistant_detected = False
         name = (profile or "").strip().lower()
-        if name in ("local-agent-work", "agent-workmodus", "agent_workmodus", "work-mode", "workmodus", "work", "work mode"):
+        if name in (
+            "local-agent-work",
+            "agent-workmodus",
+            "agent_workmodus",
+            "work-mode",
+            "workmodus",
+            "work",
+            "work mode",
+        ):
             os.environ["AGENT_VOICE_TOOLSETS"] = self._WORK_MODE_TOOLSETS
             logger.info("Agent profile -> Work mode (no terminal/code/file)")
-            return "Work mode aktiv: sichere Tools (kein Terminal, kein Code, kein Dateizugriff)."
+            return "Work mode active: restricted tools (no terminal, code, or file access)."
         os.environ.pop("AGENT_VOICE_TOOLSETS", None)  # full tools
         logger.info("Agent profile -> %s (full tools)", name or "default")
-        return f"Agent ({name or 'default'}): volle Tools aktiv."
+        return f"Agent ({name or 'default'}): full tools active."
 
     async def get_available_voices(self) -> list[str]:
         return [self._current_voice]
@@ -1115,8 +1159,9 @@ class AgentVoiceHandler(ConversationHandler):
         return f"AGENT voice set to {self._current_voice}."
 
     async def _maybe_local_answer(self, transcript: str) -> str | None:
-        """Latency #3: fully answer a clearly-trivial short turn with the local 9B (opt-in, conservative),
-        or None to fall through to the full cloud brain. Best-effort — any failure returns None.
+        """Latency #3: fully answer a clearly-trivial short turn with the local 9B (opt-in, conservative), or None to fall through to the full cloud brain.
+
+        Best-effort — any failure returns None.
         """
         try:
             from reachy_mini_conversation_app.agent_clients import LocalReflexClient
@@ -1126,10 +1171,10 @@ class AgentVoiceHandler(ConversationHandler):
             return None
 
     async def _prewarm(self) -> None:
-        """One-shot, best-effort warm of the gateway/OpenAI shared 79k-prefix cache so the first real
-        turn is less likely to be cold (~9-10s). Raw stateless HTTP with a trivial 1-token request —
-        does NOT go through the client/turn path (no lock, no ws, no side effects). Any failure is
-        swallowed; this can only help or no-op.
+        """One-shot, best-effort warm of the gateway/OpenAI shared 79k-prefix cache so the first real turn is less likely to be cold (~9-10s).
+
+        Raw stateless HTTP with a trivial 1-token request — does NOT go through the client/turn path (no lock,
+        no ws, no side effects). Any failure is swallowed; this can only help or no-op.
         """
         try:
             import httpx
@@ -1152,16 +1197,19 @@ class AgentVoiceHandler(ConversationHandler):
         except Exception as e:
             logger.debug("AGENT pre-warm skipped: %s", e)
 
-    async def _stream_with_lead_in(self, transcript: str, ask_stream):
+    async def _stream_with_lead_in(
+        self, transcript: str, ask_stream: Callable[[str], AsyncGenerator[str, None]]
+    ) -> AsyncGenerator[str, None]:
         """Wrap the slow full-brain ask_stream with the conditional 9B *quick-take*.
 
         The 9B opener is fired in PARALLEL at t=0 so its latency overlaps the gateway. If the gateway's
         first real chunk has not arrived within AGENT_QUICKTAKE_DELAY_S, we speak an opener to mask the
         think-time: the 9B's bridge IF it already returned, else an instant static bridge — we never
-        wait on the 9B, so the opener adds no latency of its own. Openers avoid "Moment" so they don't
-        collide with a Phase-A tool-status line. On fast turns nothing extra is emitted. The underlying
+        wait on the 9B, so the opener adds no latency of its own. Openers avoid "moment" so they don't
+        collide with a Phase-A tool-status line ("One moment, ..."). On fast turns nothing extra is emitted. The underlying
         ask_stream task is never cancelled before its first chunk (cancelling would abort generation).
         """
+
         def _f(name: str, default: float) -> float:
             v = os.getenv(name)
             try:
@@ -1171,10 +1219,9 @@ class AgentVoiceHandler(ConversationHandler):
 
         from reachy_mini_conversation_app.agent_clients import _gap_filler, _static_quicktake
 
-        quicktake_on = (
-            self._lead_in_client is not None
-            and os.getenv("AGENT_QUICKTAKE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
-        )
+        quicktake_on = self._lead_in_client is not None and os.getenv(
+            "AGENT_QUICKTAKE_ENABLED", "1"
+        ).strip().lower() not in ("0", "false", "no", "off")
         agen = ask_stream(transcript)
         lead_task = None
         first_task = None
@@ -1186,7 +1233,7 @@ class AgentVoiceHandler(ConversationHandler):
             done, _pending = await asyncio.wait({first_task}, timeout=delay)
             if not done and quicktake_on and not self._barge_event.is_set():
                 # Gateway still silent: take the 9B bridge only if it's ALREADY back; otherwise speak a
-                # static bridge instantly. Guard against a disobedient 9B emitting "Moment" (Phase-A's word).
+                # static bridge instantly. Guard against a disobedient 9B emitting "moment" (Phase-A's word).
                 bridge = ""
                 if lead_task is not None and lead_task.done() and not lead_task.cancelled():
                     try:
@@ -1205,8 +1252,7 @@ class AgentVoiceHandler(ConversationHandler):
                 gap_interval = _f("AGENT_GAP_FILL_INTERVAL_S", 2.2)
                 used_fills = {bridge}
                 fills = 0
-                while (quicktake_on and fills < gap_max and not self._barge_event.is_set()
-                       and not first_task.done()):
+                while quicktake_on and fills < gap_max and not self._barge_event.is_set() and not first_task.done():
                     done2, _p2 = await asyncio.wait({first_task}, timeout=gap_interval)
                     if done2 or self._barge_event.is_set():
                         break  # first real chunk arrived (or barge) -> stop filling
@@ -1241,11 +1287,10 @@ class AgentVoiceHandler(ConversationHandler):
                 pass
 
     async def _maybe_scene_context(self, transcript: str) -> str | None:
-        """Parallel vision: if the turn plausibly needs sight, fetch a 9B-VLM scene description
-        (offloaded, time-boxed) and return it as labeled context for the brain (ordered composition —
-        AGENT answers as the single voice using it). Best-effort: any failure returns None and the turn
-        proceeds without sight. v1 fetches at transcript time; v2 will fire at speech onset to hide the
-        VLM latency under the user's speech.
+        """Parallel vision: if the turn plausibly needs sight, fetch a 9B-VLM scene description (offloaded, time-boxed) and return it as labeled context for the brain (ordered composition — AGENT answers as the single voice using it).
+
+        Best-effort: any failure returns None and the turn proceeds without sight. v1 fetches at transcript
+        time; v2 will fire at speech onset to hide the VLM latency under the user's speech.
         """
         try:
             from reachy_agent.voice.vision_context import scene_context, is_visual_query
@@ -1263,7 +1308,7 @@ class AgentVoiceHandler(ConversationHandler):
         budget = self._float_env("AGENT_VISION_BUDGET_S", 2.0)
 
         def _describe(f: Any, p: str) -> str:
-            return smolvlm_describe(f, p, timeout=budget)
+            return str(smolvlm_describe(f, p, timeout=budget))
 
         try:
             ctx = await asyncio.wait_for(
@@ -1272,12 +1317,12 @@ class AgentVoiceHandler(ConversationHandler):
             )
             if ctx:
                 logger.info("AGENT vision: scene context attached (%d chars)", len(ctx))
-            return ctx
+            return str(ctx) if ctx else None
         except Exception as exc:
             logger.info("AGENT vision: scene context skipped (%s)", type(exc).__name__)
             return None
 
-    def _grab_frame(self):
+    def _grab_frame(self) -> NDArray[np.uint8] | None:
         """Latest camera frame from the worker as RGB, or None (best-effort).
 
         The SDK camera pipeline delivers BGR (caps video/x-raw,format=BGR) but the VLM PNG
@@ -1294,26 +1339,25 @@ class AgentVoiceHandler(ConversationHandler):
             return None
         if frame is not None and getattr(frame, "ndim", 0) == 3 and frame.shape[2] == 3:
             frame = np.ascontiguousarray(frame[:, :, ::-1])  # BGR (SDK) -> RGB (encoder)
-        return frame
+        return cast(NDArray[np.uint8] | None, frame)
 
     async def _frame_data_url(self) -> str | None:
-        """Latest frame as a downscaled PNG data-URL for the native native-vision path (premium,
-        complex visual reasoning). Best-effort -> None.
+        """Latest frame as a downscaled PNG data-URL for the native native-vision path (premium, complex visual reasoning).
+
+        Best-effort -> None.
         """
         frame = self._grab_frame()
         if frame is None:
             return None
         try:
             from reachy_agent.body.vlm_client import _png_data_url
-            return await asyncio.to_thread(_png_data_url, frame)
+
+            return str(await asyncio.to_thread(_png_data_url, frame))
         except Exception:
             return None
 
     async def _video_scene_context(self, transcript: str) -> str | None:
-        """Grab a short multi-frame clip and let GEMMA (only) describe what happens over time (Gemma
-        3n does video); fold the description into the brain's prompt as labeled input. gemma-only —
-        uses AGENT_VLM_BASE_URL/MODEL (the dedicated gemma vision endpoint).
-        """
+        """Grab a short multi-frame clip and let GEMMA (only) describe what happens over time (Gemma  3n does video); fold the description into the brain's prompt as labeled input. gemma-only — uses AGENT_VLM_BASE_URL/MODEL (the dedicated gemma vision endpoint)."""
         n = max(1, int(self._float_env("AGENT_VIDEO_FRAMES", 6)))
         interval = self._float_env("AGENT_VIDEO_INTERVAL_S", 0.15)
         frames = []
@@ -1332,7 +1376,7 @@ class AgentVoiceHandler(ConversationHandler):
         budget = self._float_env("AGENT_VIDEO_BUDGET_S", 6.0)
 
         def _desc() -> str:
-            return describe_frames(frames, transcript, timeout=budget)
+            return str(describe_frames(frames, transcript, timeout=budget))
 
         try:
             desc = await asyncio.wait_for(asyncio.to_thread(_desc), timeout=budget + 0.5)
@@ -1360,7 +1404,7 @@ class AgentVoiceHandler(ConversationHandler):
             if not clean_transcript or self._closed:
                 return
             if self._pipeline_monitor is not None:
-                self._pipeline_monitor.emit("stt", clean_transcript, language=os.getenv("AGENT_STT_LANGUAGE", "en"))
+                self._pipeline_monitor.emit("stt", clean_transcript, language=_stt_language())
             async with self._turn_lock:
                 if self._closed:
                     return
@@ -1405,6 +1449,7 @@ class AgentVoiceHandler(ConversationHandler):
                 image_url = None
                 try:
                     from reachy_agent.voice.vision_context import vision_mode
+
                     mode = vision_mode(clean_transcript) if self._env_on("AGENT_VISION_ENABLED") else "none"
                 except Exception:
                     mode = "none"
@@ -1418,8 +1463,15 @@ class AgentVoiceHandler(ConversationHandler):
                     scene = await self._maybe_scene_context(clean_transcript)
                 try:
                     if ask_stream is not None:
-                        def _stream_fn(t: str, _ctx=scene, _img=image_url):
-                            return ask_stream(t, _ctx, _img) if (_ctx or _img) else ask_stream(t)
+
+                        def _stream_fn(
+                            t: str, _ctx: str | None = scene, _img: str | None = image_url
+                        ) -> AsyncGenerator[str, None]:
+                            return cast(
+                                AsyncGenerator[str, None],
+                                ask_stream(t, _ctx, _img) if (_ctx or _img) else ask_stream(t),
+                            )
+
                         async for sentence in self._stream_with_lead_in(clean_transcript, _stream_fn):
                             sentence = sentence.strip()
                             if not sentence:
@@ -1448,8 +1500,9 @@ class AgentVoiceHandler(ConversationHandler):
                                 break  # stopped mid/after a sentence; commit forwards the interrupt
                     else:  # non-streaming client (e.g. tests) — single shot
                         reply = await _resolve_text(
-                            self.agent_client.ask(clean_transcript, scene, image_url)
-                            if (scene or image_url) else self.agent_client.ask(clean_transcript)
+                            getattr(self.agent_client, "ask")(clean_transcript, scene, image_url)
+                            if (scene or image_url)
+                            else self.agent_client.ask(clean_transcript)
                         )
                         parts.append(reply)
                         spoke_any = await self._speak_sentence(reply)
@@ -1464,9 +1517,7 @@ class AgentVoiceHandler(ConversationHandler):
                             await self._speak_sentence(fallback)
                         except Exception:
                             logger.warning("AGENT fallback TTS failed too", exc_info=True)
-                        self.output_queue.put_nowait(
-                            AdditionalOutputs({"role": "assistant", "content": fallback})
-                        )
+                        self.output_queue.put_nowait(AdditionalOutputs({"role": "assistant", "content": fallback}))
                         return
                 if parts:
                     self.output_queue.put_nowait(AdditionalOutputs({"role": "assistant", "content": " ".join(parts)}))
@@ -1474,7 +1525,10 @@ class AgentVoiceHandler(ConversationHandler):
                 if parts and not spoke_any and not committed:
                     self.output_queue.put_nowait(
                         AdditionalOutputs(
-                            {"role": "assistant", "content": "I generated the answer, but speech output is having trouble."}
+                            {
+                                "role": "assistant",
+                                "content": "I generated the answer, but speech output is having trouble.",
+                            }
                         )
                     )
         finally:
@@ -1501,7 +1555,9 @@ class AgentVoiceHandler(ConversationHandler):
 
     def _maybe_turn_emote(self, user_text: str, answer_text: str) -> None:
         """Fire a curated emotion matching the finished turn's affect (gap-map Stufe 2).
-        Conservative: sparse keyword cues + cooldown — most turns end without an emote."""
+
+        Conservative: sparse keyword cues + cooldown — most turns end without an emote.
+        """
         if not self._env_on("AGENT_TURN_EMOTES", "1"):
             return
         now = time.monotonic()
@@ -1524,11 +1580,12 @@ class AgentVoiceHandler(ConversationHandler):
             logger.debug("turn emote failed", exc_info=True)
 
     async def _speak_sentence(self, text: str) -> bool:
-        """Speak one sentence with low latency: stream PCM from the TTS as it is generated and queue
-        ~0.5s real-time-paced segments to the speaker. Streaming (response_format=pcm) yields the first
-        audio ~176ms after the request vs waiting for the whole-sentence WAV; pacing + segmenting keeps
-        the GStreamer appsrc queue small (a whole blob overflows max-bytes). Falls back to the full-WAV
-        synthesize() if the client can't stream. Returns True if any audio was queued.
+        """Speak one sentence with low latency: stream PCM from the TTS as it is generated and queue ~0.5s real-time-paced segments to the speaker.
+
+        Streaming (response_format=pcm) yields the first audio ~176ms after the request vs waiting for the
+        whole-sentence WAV; pacing + segmenting keeps the GStreamer appsrc queue small (a whole blob overflows
+        max-bytes). Falls back to the full-WAV synthesize() if the client can't stream. Returns True if any
+        audio was queued.
         """
         thinking_cue = getattr(self, "_thinking_cue", None)
         if thinking_cue is not None:
@@ -1540,12 +1597,14 @@ class AgentVoiceHandler(ConversationHandler):
             return False
         segment_seconds = min(1.0, max(0.02, self._float_env("AGENT_PLAYBACK_SEGMENT_S", 0.5)))
         if self._pipeline_monitor is not None:
+            # Report what the TTS client will actually send (bounded speed, live set_voice changes).
+            tts_config = getattr(self.tts_client, "config", None)
             self._pipeline_monitor.emit(
                 "tts",
                 text,
-                model=os.getenv("AGENT_QWEN_TTS_MODEL", "qwen3-tts"),
-                voice=os.getenv("AGENT_QWEN_TTS_VOICE", "default"),
-                speed=self._float_env("AGENT_TTS_SPEED", 1.0),
+                model=getattr(tts_config, "model", None),
+                voice=getattr(tts_config, "voice", None),
+                speed=getattr(tts_config, "speed", None),
             )
         seg = max(1, int(24000 * segment_seconds))
         stream_pcm = getattr(self.tts_client, "stream_pcm", None)
@@ -1554,7 +1613,7 @@ class AgentVoiceHandler(ConversationHandler):
             return False
         try:
             if stream_pcm is not None:
-                buf = np.zeros(0, dtype=np.int16)
+                buf: NDArray[np.int16] = np.zeros(0, dtype=np.int16)
                 sr = 24000
                 async for csr, chunk in stream_pcm(text):
                     if self._barge_event.is_set():
@@ -1597,9 +1656,8 @@ class AgentVoiceHandler(ConversationHandler):
         self._speaking_until = max(self._playback_cursor, time.monotonic()) + 0.8
         return spoke
 
-    def _sway_feed(self, sr: int, pcm) -> None:
-        """Hand a queued TTS segment to the antenna sway, stamped with the monotonic time it
-        will actually start playing (the playback cursor before this segment is booked)."""
+    def _sway_feed(self, sr: int, pcm: NDArray[np.int16]) -> None:
+        """Hand a queued TTS segment to the antenna sway, stamped with the monotonic time it  will actually start playing (the playback cursor before this segment is booked)."""
         sway = getattr(self, "_speech_sway", None)
         if sway is not None:
             try:
@@ -1608,10 +1666,11 @@ class AgentVoiceHandler(ConversationHandler):
                 pass
 
     def _advance_playback_clock(self, seg_seconds: float, speech: bool = True) -> None:
-        """Advance the monotonic playback cursor by one queued segment and derive _speaking_until
-        from it. The cursor tracks when the LAST queued audio actually finishes playing (real-time),
-        so the half-duplex gate stays closed through the whole audible reply — the old per-segment
-        "now + const" estimate expired while several seconds of audio were still downstream.
+        """Advance the monotonic playback cursor by one queued segment and derive _speaking_until from it.
+
+        The cursor tracks when the LAST queued audio actually finishes playing (real-time), so the half-duplex
+        gate stays closed through the whole audible reply — the old per-segment "now + const" estimate expired
+        while several seconds of audio were still downstream.
         """
         now = time.monotonic()
         self._playback_cursor = max(self._playback_cursor, now) + seg_seconds
@@ -1635,8 +1694,10 @@ class AgentVoiceHandler(ConversationHandler):
             t.add_done_callback(self._misc_tasks.discard)
 
     async def _pace_playback(self) -> None:
-        """Keep at most ~AGENT_PLAYBACK_LEAD_S of audio queued downstream. Bounding the lead also
-        bounds how much audio a barge-stop has to flush (it can only ever be ~the lead).
+        """Keep at most ~AGENT_PLAYBACK_LEAD_S of audio queued downstream.
+
+        Bounding the lead also bounds how much audio a barge-stop has to flush (it can only ever be ~the
+        lead).
         """
         lead_target = self._float_env("AGENT_PLAYBACK_LEAD_S", 1.0)
         lead = self._playback_cursor - time.monotonic()

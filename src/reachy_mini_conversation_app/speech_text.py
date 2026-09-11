@@ -1,7 +1,6 @@
 """Normalize assistant text for natural speech synthesis."""
 
 from __future__ import annotations
-
 import re
 
 

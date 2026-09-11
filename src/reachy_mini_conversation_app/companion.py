@@ -14,12 +14,12 @@ Events (each with its own cooldown, plus a global one):
 """
 
 from __future__ import annotations
-
-import asyncio
-import logging
 import os
 import time
+import asyncio
+import logging
 from typing import Any, Callable
+
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +47,14 @@ class CompanionWatcher:
         camera_worker: Any | None = None,
         poll_s: float = 2.5,
     ) -> None:
+        """Initialize the configured state."""
         self.deps = deps
         self.on_event = on_event
         self.is_busy = is_busy
         self.camera_worker = camera_worker
         self.poll_s = poll_s
         self.global_cooldown_s = _env_float("AGENT_COMPANION_COOLDOWN_S", 120.0)
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[Any] | None = None
         self._last_event = 0.0
         self._speech_streak = 0
         self._face_last_seen: float | None = None
@@ -61,13 +62,16 @@ class CompanionWatcher:
 
     @staticmethod
     def enabled() -> bool:
+        """Handle enabled."""
         return _env_on("AGENT_COMPANION", "0")
 
     def start(self) -> None:
+        """Start the background worker."""
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
 
     def stop(self) -> None:
+        """Stop the background worker."""
         if self._task is not None and not self._task.done():
             self._task.cancel()
         self._task = None
@@ -103,9 +107,7 @@ class CompanionWatcher:
                     self._speech_streak += 1
                     if self._speech_streak >= 2:
                         self._speech_streak = 0
-                        self._fire(
-                            "Speech is happening nearby (microphone array), but nobody addressed you directly."
-                        )
+                        self._fire("Speech is happening nearby (microphone array), but nobody addressed you directly.")
                 else:
                     self._speech_streak = 0
 
@@ -129,8 +131,11 @@ class CompanionWatcher:
 
 
 def event_transcript(desc: str) -> str:
-    """The event notice handed to the brain as a turn. Explicitly frames it as a non-user event
-    and licenses silence — an empty answer ends the turn without speech."""
+    """Build the event notice handed to the brain as a turn.
+
+    Explicitly frames it as a non-user event and licenses silence — an empty answer ends the turn without
+    speech.
+    """
     return (
         f"[Event, companion mode — NOT a user turn: {desc}] "
         "Respond only if one short, natural English reaction genuinely fits (one sentence, in character). "

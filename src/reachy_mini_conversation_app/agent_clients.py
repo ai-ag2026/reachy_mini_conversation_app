@@ -9,14 +9,15 @@ import asyncio
 import logging
 from typing import Any, Protocol
 from dataclasses import replace, dataclass
-
-
-logger = logging.getLogger(__name__)
+from collections.abc import AsyncIterator
 
 import numpy as np
 from numpy.typing import NDArray
 
 from reachy_mini_conversation_app.conversation_handler import AudioFrame
+
+
+logger = logging.getLogger(__name__)
 
 
 VOICE_FAST_SYSTEM_MESSAGE = """You are AGENT, embodied in the Reachy robot, in a live spoken conversation. Your text is spoken aloud.
@@ -66,7 +67,7 @@ def _drain_voice_chunks(buf: str, produced: bool, first_chunk_min_chars: int) ->
                 m = c
         if not m:
             break
-        chunk, buf = buf[: m.end()].strip(), buf[m.end():]
+        chunk, buf = buf[: m.end()].strip(), buf[m.end() :]
         if chunk:
             produced = True
             chunks.append(chunk)
@@ -115,17 +116,15 @@ def _defer_line() -> str:
 
 
 def _compose_user(cleaned: str, context: str | None) -> str:
-    """Prepend a clearly-labeled context line (e.g. parallel vision) to the user turn so the brain
-    answers as the single voice using it as INPUT — ordered composition, no second stream to merge.
-    """
+    """Prepend a clearly-labeled context line (e.g. parallel vision) to the user turn so the brain  answers as the single voice using it as INPUT — ordered composition, no second stream to merge."""
     ctx = (context or "").strip()
     return f"{ctx}\n\n{cleaned}" if ctx else cleaned
 
 
-def _apply_tool_policy(payload: dict) -> None:
-    """Full AGENT tools by default — the gateway runs the agent with its ``platform_toolsets.api_server``
-    set (memory, web, vision, delegation, homeassistant, terminal, …). Set ``AGENT_VOICE_TOOLS=0`` to
-    neuter back to the legacy text-only voice-fast mode (tools off).
+def _apply_tool_policy(payload: dict[str, Any]) -> None:
+    """Full AGENT tools by default — the gateway runs the agent with its ``platform_toolsets.api_server`` set (memory, web, vision, delegation, homeassistant, terminal, …).
+
+    Set ``AGENT_VOICE_TOOLS=0`` to neuter back to the legacy text-only voice-fast mode (tools off).
     """
     if os.getenv("AGENT_VOICE_TOOLS", "1").strip().lower() in ("0", "false", "no", "off"):
         payload["tools"] = []
@@ -139,16 +138,20 @@ def _apply_tool_policy(payload: dict) -> None:
         payload["enabled_toolsets"] = [t.strip() for t in restrict.split(",") if t.strip()]
 
 
-def _user_message(cleaned: str, context: str | None, image_url: str | None) -> dict:
-    """Build the user chat message: text (with optional labeled context), plus a native image for the
-    premium native-vision path (the brain sees the actual pixels). Text-only otherwise.
+def _user_message(cleaned: str, context: str | None, image_url: str | None) -> dict[str, Any]:
+    """Build the user chat message: text (with optional labeled context), plus a native image for the premium native-vision path (the brain sees the actual pixels).
+
+    Text-only otherwise.
     """
     text = _compose_user(cleaned, context)
     if image_url:
-        return {"role": "user", "content": [
-            {"type": "text", "text": text},
-            {"type": "image_url", "image_url": {"url": image_url}},
-        ]}
+        return {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": text},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        }
     return {"role": "user", "content": text}
 
 
@@ -160,12 +163,14 @@ def _default_voice_session_id() -> str:
     Cross-day recall is provided by the stable ``session_key`` (long-term memory).
     """
     from datetime import datetime
+
     return "reachy-voice-" + datetime.now().astimezone().strftime("%Y%m%d")
 
 
 def _default_voice_session_title() -> str:
     """Human-readable title for the per-day voice session."""
     from datetime import datetime
+
     return "Reachy Voice " + datetime.now().astimezone().strftime("%d.%m.%Y")
 
 
@@ -185,7 +190,7 @@ class HermesVoiceConfig:
     api_key_env: str = "API_SERVER_KEY"
     timeout_seconds: float = 30.0
     max_response_chars: int = 2000  # spoken-reply cap; raise via AGENT_MAX_RESPONSE_CHARS
-    max_tokens: int = 1200          # LLM token cap; raise via AGENT_MAX_TOKENS
+    max_tokens: int = 1200  # LLM token cap; raise via AGENT_MAX_TOKENS
     # Opt-in Hermes gateway session/memory (sent as headers, see _session_headers):
     #   session_id  -> X-Hermes-Session-Id  : working conversation thread; the gateway
     #                  remembers prior turns, so the client sends only the new turn.
@@ -256,10 +261,10 @@ class FastLeadInConfig:
 
     base_url: str = "http://127.0.0.1:3447/v1"
     model: str = "qwopus-9b"
-    api_key_env: str = ""          # :3447 needs no auth
+    api_key_env: str = ""  # :3447 needs no auth
     timeout_seconds: float = 1.2
     max_tokens: int = 16
-    temperature: float = 1.0       # high for variety across turns
+    temperature: float = 1.0  # high for variety across turns
     enabled: bool = True
     enable_thinking: bool = False  # 9B is a reasoning model -> CoT off for speed
 
@@ -287,9 +292,9 @@ class HermesVoiceClient:
         self._http_client = http_client
 
     def _session_headers(self) -> dict[str, str]:
-        """Opt-in Hermes session headers: the gateway threads the conversation
-        (``X-Hermes-Session-Id``) and scopes long-term memory
-        (``X-Hermes-Session-Key``). Values sanitized to single-line ASCII.
+        """Opt-in Hermes session headers: the gateway threads the conversation (``X-Hermes-Session-Id``) and scopes long-term memory (``X-Hermes-Session-Key``).
+
+        Values sanitized to single-line ASCII.
         """
         # Daily-mode (auto-defaulted id): compute per request so the thread rolls over at
         # midnight on a long-running robot (audit 2026-07-02). Explicit ids stay as configured.
@@ -310,9 +315,7 @@ class HermesVoiceClient:
         return out
 
     async def ask(self, transcript: str, context: str | None = None, image_url: str | None = None) -> str:
-        """Ask AGENT for a short spoken answer. ``context`` (e.g. gemma vision) is folded into the user
-        turn as labeled input; ``image_url`` attaches a native image (premium native-vision path).
-        """
+        """Ask AGENT for a short spoken answer. ``context`` (e.g. gemma vision) is folded into the user  turn as labeled input; ``image_url`` attaches a native image (premium native-vision path)."""
         cleaned = transcript.strip()
         if not cleaned:
             return "I didn't quite catch that."
@@ -334,10 +337,10 @@ class HermesVoiceClient:
             text or "I'm having trouble connecting to the agent right now.", self.config.max_response_chars
         )
 
-    async def ask_stream(self, transcript: str, context: str | None = None, image_url: str | None = None):
-        """Stream AGENT's reply, yielding complete sentences as they arrive. ``context`` (e.g. gemma
-        vision) is folded into the user turn as labeled input; ``image_url`` attaches a native image
-        (premium native-vision path).
+    async def ask_stream(
+        self, transcript: str, context: str | None = None, image_url: str | None = None
+    ) -> AsyncIterator[str]:
+        """Stream AGENT's reply, yielding complete sentences as they arrive. ``context`` (e.g. gemma  vision) is folded into the user turn as labeled input; ``image_url`` attaches a native image (premium native-vision path).
 
         Pipelining sentences into per-sentence TTS cuts time-to-first-audio dramatically vs awaiting
         the whole reply then synthesizing it in one block. Falls back to a single yield if the server
@@ -418,7 +421,7 @@ class HermesVoiceClient:
                         continue
                     if not line.startswith("data:"):
                         continue
-                    piece = line[len("data:"):].strip()
+                    piece = line[len("data:") :].strip()
                     if piece == "[DONE]":
                         break
                     # Spec-conform emitters may split one JSON event over several data: lines;
@@ -441,12 +444,11 @@ class HermesVoiceClient:
                     # gets the clean first-chunk treatment.
                     if isinstance(parsed, dict) and "choices" not in parsed and parsed.get("status"):
                         # Tool activity IS liveness: restart the first-audio budget clock. Without
-                        # this, AGENT announced "Moment, ich schaue nach" and the budget then
+                        # this, AGENT announced "One moment, I'll check the web." and the budget then
                         # defer-aborted the turn mid-tool ~18s later, discarding the answer
                         # (review 2026-07-02 round 2, P3).
                         start = time.monotonic()
-                        if (status_on and not produced and not announced
-                                and parsed.get("status") == "running"):
+                        if status_on and not produced and not announced and parsed.get("status") == "running":
                             note = _tool_status_line(parsed.get("tool"), parsed.get("label"))
                             if note:
                                 announced = True
@@ -491,8 +493,8 @@ _LEAD_IN_SYSTEM = (
 )
 
 # Instant static fallback bridges for the quick-take, when the 9B hasn't returned by the delay
-# threshold (we never wait on it -> zero added latency). Deliberately avoid "Moment" so a quick-take
-# bridge never collides with a Phase-A tool-status line ("Moment, ich schaue im Web nach.").
+# threshold (we never wait on it -> zero added latency). Deliberately avoid "moment" so a quick-take
+# bridge never collides with a Phase-A tool-status line ("One moment, I'll check the web.").
 _STATIC_QUICKTAKES = ("Well.", "Let's see.", "Good question.", "Hmm.", "Thinking.", "Let's check.")
 
 # Tail gap-fillers for the full-window mask: spoken only if the brain is STILL silent after the opener
@@ -512,22 +514,25 @@ _GAP_FILLERS = (
 
 def _static_quicktake() -> str:
     import random
+
     return random.choice(_STATIC_QUICKTAKES)
 
 
 def _gap_filler(exclude: set[str] | None = None) -> str:
-    """A dry, content-free tail filler for the full-window latency mask, avoiding any already used
-    this turn so repeated holes don't repeat the same line. Empty string if all are used.
+    """Return a dry, content-free tail filler for the full-window latency mask, avoiding any already used this turn so repeated holes don't repeat the same line.
+
+    Empty string if all are used.
     """
     import random
+
     pool = [f for f in _GAP_FILLERS if not exclude or f not in exclude]
     return random.choice(pool) if pool else ""
 
 
 def _sanitize_lead_in(text: str) -> str:
-    """Force the lead-in to stay a tiny content-free bridge so a disobedient 9B can never speak a
-    real-answer fragment that pre-empts or contradicts the brain. Keep only the first clause and cap
-    hard to a few words.
+    """Force the lead-in to stay a tiny content-free bridge so a disobedient 9B can never speak a real-answer fragment that pre-empts or contradicts the brain.
+
+    Keep only the first clause and cap hard to a few words.
     """
     s = (text or "").strip().strip('"“”„‘’').replace("\n", " ").strip()
     # Keep only up to the first sentence/clause terminator (a bridge is one short beat).
@@ -617,10 +622,10 @@ def _reflex_looks_like_confirmation(cleaned: str) -> bool:
 
 @dataclass
 class LocalReflexConfig:
-    """Config for the local 9B 'reflex' that fully answers clearly-trivial turns, removing the 3-6s
-    cloud brain from the loop on that slice. Default DISABLED — 'voller AGENT' is the default; opt in
-    via AGENT_LOCAL_TRIVIAL=1. Conservative: only short turns are candidates and the 9B is prompted to
-    ESCALATE on any doubt.
+    """Config for the local 9B 'reflex' that fully answers clearly-trivial turns, removing the 3-6s cloud brain from the loop on that slice.
+
+    Default DISABLED — 'voller AGENT' is the default; opt in via AGENT_LOCAL_TRIVIAL=1. Conservative: only
+    short turns are candidates and the 9B is prompted to ESCALATE on any doubt.
     """
 
     base_url: str = "http://127.0.0.1:3447/v1"
@@ -635,6 +640,7 @@ class LocalReflexConfig:
 
     @classmethod
     def from_env(cls) -> LocalReflexConfig:
+        """Handle from env."""
         defaults = cls()
         return cls(
             base_url=os.getenv("AGENT_LOCAL_BASE_URL", os.getenv("AGENT_GATE_BASE_URL", defaults.base_url)),
@@ -647,11 +653,13 @@ class LocalReflexConfig:
 
 
 class LocalReflexClient:
-    """Fully answers a clearly-trivial turn with the local 9B, or returns None to fall through to the
-    full brain. Best-effort: any failure / ESCALATE / long turn returns None (never a wrong answer).
+    """Fully answers a clearly-trivial turn with the local 9B, or returns None to fall through to the full brain.
+
+    Best-effort: any failure / ESCALATE / long turn returns None (never a wrong answer).
     """
 
     def __init__(self, config: LocalReflexConfig | None = None, http_client: AsyncPostClient | None = None) -> None:
+        """Initialize the configured state."""
         self.config = config or LocalReflexConfig.from_env()
         self._http_client = http_client
 
@@ -747,10 +755,11 @@ class QwenVoiceTtsClient:
         async with httpx.AsyncClient(timeout=self.config.timeout_seconds) as live_client:
             return await live_client.post(url, json=payload, headers=headers)
 
-    async def stream_pcm(self, text: str, *, sample_rate: int = 24000):
-        """Stream raw PCM for low time-to-first-audio, yielding (sample_rate, int16) chunks as bytes
-        arrive (~176ms first-byte vs ~1.3s for the full-WAV path). Odd trailing bytes carry to the
-        next chunk so every yield is on a whole-sample boundary. Ported from the MVP's QwenTtsClient.
+    async def stream_pcm(self, text: str, *, sample_rate: int = 24000) -> AsyncIterator[AudioFrame]:
+        """Stream raw PCM for low time-to-first-audio, yielding (sample_rate, int16) chunks as bytes arrive (~176ms first-byte vs ~1.3s for the full-WAV path).
+
+        Odd trailing bytes carry to the next chunk so every yield is on a whole-sample boundary. Ported from
+        the MVP's QwenTtsClient.
         """
         cleaned = text.strip()
         if not cleaned:
@@ -828,8 +837,15 @@ def _trim_for_voice(text: str, limit: int) -> str:
     # Never cut mid-word/sentence (the TTS would speak the fragment -> sounds like AGENT "broke off").
     # Back off from the limit to the last sentence boundary; fall back to the last word boundary.
     window = cleaned[:limit]
-    cut = max(window.rfind(". "), window.rfind("! "), window.rfind("? "),
-              window.rfind("."), window.rfind("!"), window.rfind("?"), window.rfind("…"))
+    cut = max(
+        window.rfind(". "),
+        window.rfind("! "),
+        window.rfind("? "),
+        window.rfind("."),
+        window.rfind("!"),
+        window.rfind("?"),
+        window.rfind("…"),
+    )
     if cut >= limit * 0.5:  # a sentence boundary reasonably far in -> end cleanly there
         return window[: cut + 1].rstrip()
     space = window.rfind(" ")
