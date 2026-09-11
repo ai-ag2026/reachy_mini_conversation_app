@@ -151,8 +151,9 @@ Copy `.env.example` to `.env` when you want to switch backends, provide API keys
 | `AGENT_IDLE_BREATHING` / `AGENT_IDLE_ACTIONS` | Idle breathing and random idle movement. Both default to `1` (on); set `0` for quiet microphone operation. |
 | `AGENT_SPEECH_WOBBLE` / `AGENT_SPEECH_SWAY` | Speech-driven head wobble and antenna sway. Both default to `1` (on); set `0` to disable. |
 | `AGENT_TURN_EMOTES` / `AGENT_ORIENT_TO_SPEAKER` | End-of-turn emotions and microphone-triggered head turns. Both default to `1` (on); set `0` to disable. |
-| `AGENT_THINKING_CUE` / `AGENT_THINKING_CUE_MAX_DEG` | Subtle antenna-only cue while waiting for the backend, and its amplitude. Defaults to `1` (on) and `2.0` degrees. |
-| `AGENT_ANTENNA_REST_DEG` | Outward antenna rest bias that avoids servo hunting at zero. Defaults to `10` (clamped to `0`–`20`). |
+| `AGENT_THINKING_CUE` / `AGENT_THINKING_CUE_MAX_DEG` | Subtle antenna-only cue while waiting for the backend, and its amplitude. Defaults to `1` (on) and `2.0` degrees; amplitude is clamped to `0`–`5` degrees. |
+| `AGENT_SWAY_MAX_DEG` | Speech-sway amplitude, default `14` degrees, clamped to `0`–`14`. |
+| `AGENT_ANTENNA_REST_DEG` | Initial outward antenna rest bias. Defaults to `10` (clamped to `0`–`20`; malformed values warn and fall back to `10`). This seeds only the initial pose: later moves can end at zero antennas, and quiet mode does not restore the bias. |
 | `AGENT_DAEMON_BASE_URL` | Reachy daemon HTTP API for playback/movement/status. Defaults to `http://127.0.0.1:8000`. |
 | `LOCAL_VISION_MODEL` | Hugging Face model path for local vision processing (only used with `--local-vision` flag, defaults to `HuggingFaceTB/SmolVLM2-2.2B-Instruct`). |
 

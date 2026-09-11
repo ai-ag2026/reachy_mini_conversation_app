@@ -289,7 +289,14 @@ class MovementManager:
         # A small outward antenna bias is the mechanically stable rest pose. Holding both
         # antennas at exactly zero can make an otherwise idle servo hunt/twitch; breathing
         # used to supply this bias, but quiet mode intentionally disables breathing.
-        rest_deg = min(20.0, max(0.0, float(os.getenv("AGENT_ANTENNA_REST_DEG", "10"))))
+        # This seeds only the initial pose. Later moves may end at zero antennas;
+        # quiet mode does not restore the bias via breathing.
+        try:
+            rest_deg = float(os.getenv("AGENT_ANTENNA_REST_DEG", "10"))
+        except ValueError:
+            logger.warning("Invalid AGENT_ANTENNA_REST_DEG; using 10 degrees")
+            rest_deg = 10.0
+        rest_deg = min(20.0, max(0.0, rest_deg))
         rest_rad = float(np.deg2rad(rest_deg))
         self.state.last_primary_pose = (neutral_pose, (-rest_rad, rest_rad), 0.0)
 

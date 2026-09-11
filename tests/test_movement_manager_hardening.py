@@ -238,3 +238,10 @@ def test_dance_emotion_error_fallback_holds_last_pose():
     bad = move.evaluate(1.5)  # raises upstream -> must hold the last valid pose, not neutral
     assert bad[0][0, 3] == pytest.approx(0.02)
     assert bad == ok
+
+
+def test_invalid_rest_bias_falls_back_without_crashing(monkeypatch, caplog):
+    monkeypatch.setenv("AGENT_ANTENNA_REST_DEG", "invalid")
+    manager = MovementManager(_FakeRobot())
+    assert manager.state.last_primary_pose[1] == pytest.approx((-np.deg2rad(10), np.deg2rad(10)))
+    assert "Invalid AGENT_ANTENNA_REST_DEG; using 10 degrees" in caplog.text

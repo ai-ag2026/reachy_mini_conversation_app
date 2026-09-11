@@ -15,18 +15,27 @@ import re
 # "user_text ||| answer_text".
 _CUES: tuple[tuple[str, str], ...] = (
     # user-side greetings/goodbyes (the answer usually mirrors them, either side may hit)
-    (r"\b(hallo|hi|hey|guten morgen|guten tag|guten abend|willkommen)\b", "greeting"),
-    (r"\b(tsch(ü|ue)ss|auf wiedersehen|bis (sp(ä|ae)ter|morgen|bald)|gute nacht)\b", "goodbye"),
-    (r"\b(danke|dankesch(ö|oe)n|vielen dank)\b", "grateful"),
+    (
+        r"\b(hello|good morning|good afternoon|good evening|welcome|hallo|hi|hey|guten morgen|guten tag|guten abend|willkommen)\b",
+        "greeting",
+    ),
+    (
+        r"\b(goodbye|bye|see you|good night|tsch(ü|ue)ss|auf wiedersehen|bis (sp(ä|ae)ter|morgen|bald)|gute nacht)\b",
+        "goodbye",
+    ),
+    (r"\b(thanks|thank you|danke|dankesch(ö|oe)n|vielen dank)\b", "grateful"),
     # answer-side affect
-    (r"\b(haha|hihi|witz|lustig|zum lachen|k(ö|oe)stlich)\b", "laughing"),
-    (r"\b(super|perfekt|klasse|ausgezeichnet|erledigt|geschafft|fertig!)\b", "success"),
-    (r"\b(leider|tut mir leid|bedauerlich|schade|misslungen|fehlgeschlagen)\b", "downcast"),
-    (r"\b((ü|ue)berrascht|wow|erstaunlich|unglaublich|tats(ä|ae)chlich\?)\b", "amazed"),
-    (r"\b(vorsicht|achtung|warnung|riskant|gef(ä|ae)hrlich)\b", "anxious"),
-    (r"\b(verwirrend|verstehe nicht|unklar|keine ahnung)\b", "confused"),
-    (r"\b(ja[.!]|genau[.!]|richtig[.!]|stimmt[.!])", "yes"),
-    (r"\b(nein[.!]|falsch[.!]|leider nein)\b", "no"),
+    (r"\b(funny|hilarious|haha|hihi|witz|lustig|zum lachen|k(ö|oe)stlich)\b", "laughing"),
+    (
+        r"\b(great|done|awesome|perfect|excellent|super|perfekt|klasse|ausgezeichnet|erledigt|geschafft|fertig!)\b",
+        "success",
+    ),
+    (r"\b(sorry|unfortunately|failed|leider|tut mir leid|bedauerlich|schade|misslungen|fehlgeschlagen)\b", "downcast"),
+    (r"\b(surprised|amazing|incredible|(ü|ue)berrascht|wow|erstaunlich|unglaublich|tats(ä|ae)chlich\?)\b", "amazed"),
+    (r"\b(careful|watch out|warning|risky|dangerous|vorsicht|achtung|warnung|riskant|gef(ä|ae)hrlich)\b", "anxious"),
+    (r"\b(confusing|unclear|no idea|I don't understand|verwirrend|verstehe nicht|unklar|keine ahnung)\b", "confused"),
+    (r"\b(yes[.!]|exactly[.!]|correct[.!]|ja[.!]|genau[.!]|richtig[.!]|stimmt[.!])", "yes"),
+    (r"\b(no[.!]|wrong[.!]|nein[.!]|falsch[.!]|leider nein\b)", "no"),
 )
 
 _COMPILED = tuple((re.compile(pat, re.IGNORECASE), intent) for pat, intent in _CUES)

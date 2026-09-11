@@ -40,7 +40,7 @@ def test_wav_file_to_pcm_roundtrip(tmp_path):
 
 @pytest.mark.asyncio
 async def test_idle_runner_fires_only_when_idle(monkeypatch):
-    """Busy handler / recent activity must suppress actions; a quiet stretch fires exactly one  (cooldown suppresses the rest)."""
+    """Busy handler / recent activity must suppress actions; a quiet stretch fires exactly one (cooldown suppresses the rest)."""
     import reachy_mini_conversation_app.liveliness as lv
 
     dispatched = []
@@ -256,7 +256,7 @@ def test_imu_magnitude_extraction():
 
 @pytest.mark.asyncio
 async def test_play_wav_path_non_wav_falls_back_to_daemon(monkeypatch):
-    """A non-WAV emotion sound (e.g. .ogg) must route through the daemon sound library instead  of being dropped when wav_file_to_pcm can't read it."""
+    """A non-WAV emotion sound (e.g. .ogg) must route through the daemon sound library instead of being dropped when wav_file_to_pcm can't read it."""
     from reachy_mini_conversation_app.tools.core_tools import ToolDependencies
     from reachy_mini_conversation_app.agent_voice_handler import (
         AgentVoiceHandler,
@@ -336,3 +336,93 @@ async def test_dispatch_tool_call_obj_unknown_tool():
 
     result = await dispatch_tool_call_obj("definitely_not_a_tool", {"x": 1}, _Deps())
     assert result == {"error": "unknown tool: definitely_not_a_tool"}
+
+
+@pytest.mark.asyncio
+async def test_thinking_stop_does_not_overwrite_sway(monkeypatch):
+    """An idle or delayed cue must never clear another writer's antenna offset."""
+    from unittest.mock import MagicMock
+
+    from reachy_mini_conversation_app.liveliness import ThinkingAntennaCue
+
+    monkeypatch.setenv("AGENT_THINKING_CUE_DELAY_S", "0.2")
+    monkeypatch.setenv("AGENT_THINKING_CUE", "1")
+    mm = MagicMock()
+    cue = ThinkingAntennaCue(mm)
+    cue.stop()
+    mm.set_external_offsets.assert_not_called()
+    cue.start()
+    await asyncio.sleep(0.02)
+    mm.set_external_offsets.assert_not_called()
+    cue.stop()
+    await asyncio.sleep(0)
+    mm.set_external_offsets.assert_not_called()
+    cue._apply(0.03)
+    cue.stop()
+    assert mm.set_external_offsets.call_args.kwargs["antennas"] == (0.0, 0.0)
+    assert not cue._applied
+    mm.set_external_offsets.reset_mock()
+    cue.stop()
+    mm.set_external_offsets.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_thinking_cancellation_releases_applied_offset(monkeypatch):
+    """Cancellation clears an active cue exactly once, before another writer takes over."""
+    from unittest.mock import MagicMock
+
+    from reachy_mini_conversation_app.liveliness import ThinkingAntennaCue
+
+    monkeypatch.setenv("AGENT_THINKING_CUE_DELAY_S", "0")
+    monkeypatch.setenv("AGENT_THINKING_CUE", "1")
+    cue = ThinkingAntennaCue(MagicMock())
+    cue.start()
+    await asyncio.sleep(0.08)
+    assert cue._applied
+    task = cue._task
+    task.cancel()
+    await task
+    assert not cue._applied
+    assert cue.mm.set_external_offsets.call_args.kwargs["antennas"] == (0.0, 0.0)
+
+
+@pytest.mark.parametrize("value,thinking,sway", [("999", 5, 14), ("-9", 0, 0), ("2", 2, 2)])
+def test_antenna_amplitude_bounds(monkeypatch, value, thinking, sway):
+    """Clamp cue and sway amplitudes without increasing their existing defaults."""
+    from reachy_mini_conversation_app.liveliness import SpeechSway, ThinkingAntennaCue
+
+    monkeypatch.setenv("AGENT_THINKING_CUE_MAX_DEG", value)
+    monkeypatch.setenv("AGENT_SWAY_MAX_DEG", value)
+    assert ThinkingAntennaCue(None).max_rad == pytest.approx(np.deg2rad(thinking))
+    assert SpeechSway(None).max_rad == pytest.approx(np.deg2rad(sway))
+
+
+@pytest.mark.parametrize(
+    "text,intent",
+    [
+        ("Hello", "greeting"),
+        ("Goodbye", "goodbye"),
+        ("Bye", "goodbye"),
+        ("Thanks", "grateful"),
+        ("Thank you", "grateful"),
+        ("Sorry", "downcast"),
+        ("Unfortunately", "downcast"),
+        ("Great", "success"),
+        ("Done", "success"),
+        ("Awesome", "success"),
+        ("Careful", "anxious"),
+        ("Watch out", "anxious"),
+        ("That's hilarious", "laughing"),
+        ("Incredible", "amazed"),
+        ("Unclear", "confused"),
+        ("Yes.", "yes"),
+        ("No.", "no"),
+        ("Danke", "grateful"),
+        ("Vorsicht", "anxious"),
+    ],
+)
+def test_emotion_cues_support_english_and_german(text, intent):
+    """English cues mirror the existing German intents without removing German support."""
+    from reachy_mini_conversation_app.emotion_cues import emotion_for_turn
+
+    assert emotion_for_turn("", text) == intent

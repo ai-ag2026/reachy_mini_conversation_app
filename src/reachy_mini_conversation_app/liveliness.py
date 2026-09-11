@@ -199,7 +199,7 @@ def ensure_chirps_uploaded(base_url: str = DAEMON_BASE_URL) -> int:
 
 
 def ensure_daemon_sound(path: str, base_url: str = DAEMON_BASE_URL) -> str | None:
-    """Make a local sound file (any GStreamer-decodable format, e.g. the emotion library's  .ogg) available in the daemon sound library; returns the library file name or None.
+    """Make a local sound file (any GStreamer-decodable format, e.g. the emotion library's .ogg) available in the daemon sound library; returns the library file name or None.
 
     Idempotent + sync — run off-thread. Library lives in /tmp (wiped on reboot).
     """
@@ -246,7 +246,7 @@ def play_daemon_sound(file_name: str, base_url: str = DAEMON_BASE_URL) -> bool:
 
 
 def read_local_doa(base_url: str = DAEMON_BASE_URL) -> dict[str, Any] | None:
-    """Read the mic-array Direction-of-Arrival from the local daemon (ported from  conversation-app-agent-bridge/look_toward_sound)."""
+    """Read the mic-array Direction-of-Arrival from the local daemon (ported from conversation-app-agent-bridge/look_toward_sound)."""
     import httpx
 
     try:
@@ -316,7 +316,7 @@ class SpeechSway:
         """Initialize the configured state."""
         self.mm = movement_manager
         self.hop_s = hop_s
-        self.max_rad = float(np.deg2rad(_env_float("AGENT_SWAY_MAX_DEG", 14.0)))
+        self.max_rad = float(np.deg2rad(min(14.0, max(0.0, _env_float("AGENT_SWAY_MAX_DEG", 14.0)))))
         self.gain = _env_float("AGENT_SWAY_GAIN", 5.0)  # rms (0..1) -> amplitude scale
         self._points: list[tuple[float, float]] = []  # (play_at_monotonic, amplitude 0..1)
         self._task: asyncio.Task[Any] | None = None
@@ -414,9 +414,10 @@ class ThinkingAntennaCue:
         """Initialize the configured state."""
         self.mm = movement_manager
         self.delay_s = _env_float("AGENT_THINKING_CUE_DELAY_S", 0.8)
-        self.max_rad = float(np.deg2rad(_env_float("AGENT_THINKING_CUE_MAX_DEG", 2.0)))
+        self.max_rad = float(np.deg2rad(min(5.0, max(0.0, _env_float("AGENT_THINKING_CUE_MAX_DEG", 2.0)))))
         self.frequency_hz = _env_float("AGENT_THINKING_CUE_HZ", 0.18)
         self._task: asyncio.Task[Any] | None = None
+        self._applied = False
 
     def start(self) -> None:
         """Begin a delayed cue, replacing any cue left by a previous turn."""
@@ -430,13 +431,16 @@ class ThinkingAntennaCue:
         if self._task is not None and not self._task.done():
             self._task.cancel()
         self._task = None
-        self._apply(0.0)
+        if self._applied:
+            self._apply(0.0)
+        self._applied = False
 
     def _apply(self, offset: float) -> None:
         setter = getattr(self.mm, "set_external_offsets", None)
         if callable(setter):
             try:
                 setter((0.0,) * 6, antennas=(offset, -offset))
+                self._applied = offset != 0.0
             except Exception:
                 logger.debug("thinking antenna cue write failed", exc_info=True)
 
@@ -452,7 +456,11 @@ class ThinkingAntennaCue:
                 self._apply(offset)
                 await asyncio.sleep(0.05)
         except asyncio.CancelledError:
-            self._apply(0.0)
+            # A cancelled predecessor must not overwrite a newer cue or speech sway.
+            if self._task is asyncio.current_task():
+                if self._applied:
+                    self._apply(0.0)
+                self._applied = False
             return
 
 
