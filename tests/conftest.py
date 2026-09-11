@@ -18,3 +18,6 @@ os.environ["REACHY_MINI_SKIP_DOTENV"] = "1"
 os.environ.pop("REACHY_MINI_CUSTOM_PROFILE", None)
 os.environ.pop("REACHY_MINI_EXTERNAL_PROFILES_DIRECTORY", None)
 os.environ.pop("REACHY_MINI_EXTERNAL_TOOLS_DIRECTORY", None)
+# Handlers would otherwise start the loopback pipeline-monitor HTTP server on port 8766 as a side
+# effect; tests that cover the monitor construct PipelineMonitor directly on an ephemeral port.
+os.environ.setdefault("AGENT_PIPELINE_MONITOR", "0")

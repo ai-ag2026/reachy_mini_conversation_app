@@ -1,25 +1,36 @@
-"""Loopback-only live monitor for the local speech/agent pipeline."""
+"""Loopback-only live monitor for the local speech/agent pipeline.
+
+Events are NOT redacted: they carry the final STT transcript and the assistant's spoken text
+verbatim. That is why the dashboard refuses to bind anything but loopback, keeps only a bounded
+in-memory history, and why the log line records stage + metadata only unless
+``AGENT_PIPELINE_MONITOR_LOG_CONTENT=1`` opts into full-text logging.
+"""
 
 from __future__ import annotations
-
-import json
-import logging
 import os
-import queue
-import threading
+import json
 import time
-from dataclasses import asdict, dataclass
-from html import escape
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import queue
+import logging
+import threading
 from typing import Any
+from dataclasses import asdict, dataclass
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 
 logger = logging.getLogger(__name__)
 
+_OFF_VALUES = {"0", "false", "no", "off"}
+_DEFAULT_PORT = 8766
+
+
+def _env_on(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() not in _OFF_VALUES
+
 
 @dataclass(frozen=True)
 class PipelineEvent:
-    """One safe, user-visible pipeline observation."""
+    """One pipeline observation; ``text`` may be user speech or assistant output, unredacted."""
 
     sequence: int
     timestamp: float
@@ -39,7 +50,7 @@ gap:12px;padding:12px 14px;background:#181b22;border:1px solid #292e39;border-ra
 .stage{font-weight:700}.stt .stage{color:#72c7ff}.llm .stage{color:#cda8ff}.tts .stage{color:#ffbe72}
 .tool .stage{color:#80e5be}.system .stage,.latency .stage{color:#aab2c3}.text{white-space:pre-wrap;overflow-wrap:anywhere}
 .meta{grid-column:3;color:#9299a8;font-size:12px;margin-top:3px}button{background:#292e39;color:#fff;border:0;border-radius:6px;padding:8px 12px}
-</style></head><body><div class="top"><div><h1>Reachy Live Pipeline</h1><div class="muted">Final STT, streamed LLM output, TTS input, tools, and timing. Raw audio and private reasoning are not recorded.</div></div>
+</style></head><body><div class="top"><div><h1>Reachy Live Pipeline</h1><div class="muted">Final STT, streamed LLM output, TTS input, tools, and timing. Text is shown verbatim; raw audio is not captured and history is in-memory only.</div></div>
 <div><span id="status" class="status">connecting</span> <button id="clear">Clear</button></div></div><div id="events"></div>
 <script>
 const events=document.getElementById('events'),status=document.getElementById('status');
@@ -56,9 +67,9 @@ es.onmessage=x=>add(JSON.parse(x.data));
 
 
 class PipelineMonitor:
-    """Fan out sanitized events to a small in-memory SSE dashboard."""
+    """Fan out pipeline events to a small in-memory, loopback-only SSE dashboard."""
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 8766, history_size: int = 200) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = _DEFAULT_PORT, history_size: int = 200) -> None:
         """Configure a loopback dashboard and bounded event history."""
         if host not in {"127.0.0.1", "::1", "localhost"}:
             raise ValueError("Pipeline monitor must bind to a loopback address")
@@ -137,19 +148,27 @@ class PipelineMonitor:
         logger.info("Reachy live pipeline monitor: %s", self.url)
 
     def emit(self, stage: str, text: str, **metadata: Any) -> None:
-        """Publish one sanitized event and log the same structured observation."""
+        """Publish one event to the dashboard and log it.
+
+        Only normalization is applied (whitespace trimmed, empty text skipped, ``None`` metadata
+        dropped); the text itself is not redacted. The log line carries stage, text length and
+        metadata; the text is logged only when ``AGENT_PIPELINE_MONITOR_LOG_CONTENT`` is enabled.
+        """
         clean_stage = stage.strip().lower() or "system"
         clean_text = str(text).strip()
         if not clean_text:
             return
-        safe_metadata = {str(k): v for k, v in metadata.items() if v is not None}
+        clean_metadata = {str(k): v for k, v in metadata.items() if v is not None}
         with self._lock:
             self._sequence += 1
-            event = PipelineEvent(self._sequence, time.time(), clean_stage, clean_text, safe_metadata)
+            event = PipelineEvent(self._sequence, time.time(), clean_stage, clean_text, clean_metadata)
             self._history.append(event)
-            del self._history[:-self.history_size]
+            del self._history[: -self.history_size]
             subscribers = list(self._subscribers)
-        logger.info("PIPELINE %-7s | %s", clean_stage.upper(), escape(clean_text, quote=False))
+        if os.getenv("AGENT_PIPELINE_MONITOR_LOG_CONTENT", "0").strip().lower() in {"1", "true", "yes", "on"}:
+            logger.info("PIPELINE %-7s | %s | %s", clean_stage.upper(), clean_text, clean_metadata)
+        else:
+            logger.info("PIPELINE %-7s | %d chars | %s", clean_stage.upper(), len(clean_text), clean_metadata)
         for subscriber in subscribers:
             try:
                 subscriber.put_nowait(event)
@@ -174,18 +193,22 @@ _monitor_lock = threading.Lock()
 
 def get_pipeline_monitor() -> PipelineMonitor | None:
     """Return the enabled process-wide monitor, starting it on first use."""
-    enabled = os.getenv("AGENT_PIPELINE_MONITOR", "1").strip().lower() not in {"0", "false", "no", "off"}
-    if not enabled:
+    if not _env_on("AGENT_PIPELINE_MONITOR", "1"):
         return None
     global _monitor
     with _monitor_lock:
         if _monitor is None:
             host = os.getenv("AGENT_PIPELINE_MONITOR_HOST", "127.0.0.1").strip()
-            port = int(os.getenv("AGENT_PIPELINE_MONITOR_PORT", "8766"))
-            _monitor = PipelineMonitor(host=host, port=port)
+            raw_port = os.getenv("AGENT_PIPELINE_MONITOR_PORT", str(_DEFAULT_PORT)).strip()
             try:
+                port = int(raw_port)
+            except ValueError:
+                logger.warning("Invalid AGENT_PIPELINE_MONITOR_PORT %r; using %d", raw_port, _DEFAULT_PORT)
+                port = _DEFAULT_PORT
+            try:
+                _monitor = PipelineMonitor(host=host, port=port)
                 _monitor.start()
-            except OSError as exc:
-                logger.warning("Could not start pipeline monitor on %s: %s", _monitor.url, exc)
+            except (OSError, ValueError) as exc:
+                logger.warning("Could not start pipeline monitor on %s:%s: %s", host, port, exc)
                 _monitor = None
     return _monitor
